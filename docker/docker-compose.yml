@@ -1,0 +1,13 @@
+services:
+  busybox-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    image: busybox-test:latest
+    container_name: busybox-test
+    working_dir: /work
+    # Test with a longer running command to thoroughly test all hooks
+    command: ["sh", "-c", "echo 'Starting main application...'; echo 'Processing data...'; sleep 15; echo 'Application processing complete!'; echo 'Shutting down gracefully...'"]
+    # Uncomment to keep container running for periodic hook testing
+    # command: ["sh", "-c", "while true; do sleep 60; done"]
+    tty: true
