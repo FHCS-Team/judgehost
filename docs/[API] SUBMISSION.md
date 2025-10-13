@@ -2,6 +2,11 @@
 
 This document describes the API endpoints for managing submissions in the judgehost system.
 
+**Implementation Status**:
+
+- ✅ **Single-container submissions**: Fully supported and production-ready
+- ⏳ **Multi-container submissions**: Planned feature (not yet implemented)
+
 **Related Documentation**:
 
 - [`[SPEC] QUEUE_SYSTEM.md`](%5BSPEC%5D%20QUEUE_SYSTEM.md) - Queue behavior and prioritization
@@ -75,9 +80,11 @@ The judgehost will:
 
 #### Multi-Container Submissions
 
+> **⚠️ Note**: Multi-container submission support is a **planned feature** and not yet implemented in the current version (v0.1.0). The following parameters (`target_service`, `multi_service`, `service_mappings`) are reserved for future use.
+
 For multi-container problems, submissions can target one or more services:
 
-**Single-Service Submission**:
+**Single-Service Submission** (planned):
 
 ```json
 {
@@ -88,7 +95,7 @@ For multi-container problems, submissions can target one or more services:
 }
 ```
 
-**Multi-Service Submission** (archive with multiple directories):
+**Multi-Service Submission** (planned - archive with multiple directories):
 
 ```json
 {
@@ -109,7 +116,7 @@ For multi-container problems, submissions can target one or more services:
 }
 ```
 
-See [`[SPEC] CONTAINER_ARCHITECTURE.md`](%5BSPEC%5D%20CONTAINER_ARCHITECTURE.md) for details on multi-container architecture.
+See [`[SPEC] CONTAINER_ARCHITECTURE.md`](%5BSPEC%5D%20CONTAINER_ARCHITECTURE.md) for details on planned multi-container architecture.
 
 ### Request Examples
 

@@ -2,6 +2,11 @@
 
 This document describes the API endpoints for managing problem packages in the judgehost system.
 
+**Implementation Status**:
+
+- ✅ **Single-container problems**: Fully supported and production-ready
+- ⏳ **Multi-container problems**: Planned feature (not yet implemented)
+
 **Related Documentation**:
 
 - [`[SPEC] PROJECT_TYPES.md`](%5BSPEC%5D%20PROJECT_TYPES.md) - Project type definitions
@@ -80,6 +85,8 @@ problem-package/
 ```
 
 #### Problem Package Structure (Multi-Container)
+
+> **⚠️ Note**: Multi-container problem support is a **planned feature** and not yet implemented in the current version (v0.1.0). The following documentation describes the intended architecture for future releases.
 
 **Example structure** for a multi-container problem (e.g., full-stack web app):
 
