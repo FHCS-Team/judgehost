@@ -1,74 +1,52 @@
-# Node.js REST API Problem
+# Reverse String Problem
 
-## Overview
+## Description
 
-Create a RESTful API server using Express.js that manages a simple todo list.
+Write a JavaScript function that takes a string as input and returns the reversed version of that string.
 
 ## Requirements
 
-### Endpoints
+- Function name: `reverseString`
+- Input: A string (may be empty, contain spaces, numbers, or special characters)
+- Output: The reversed string
 
-1. **GET /api/todos** - Get all todos
+## Example
 
-   - Returns: `{ success: true, data: [...] }`
-
-2. **GET /api/todos/:id** - Get a specific todo
-
-   - Returns: `{ success: true, data: {...} }`
-   - Error: `{ success: false, error: "Todo not found" }` (404)
-
-3. **POST /api/todos** - Create a new todo
-
-   - Body: `{ title: string, description?: string, completed?: boolean }`
-   - Returns: `{ success: true, data: {...} }`
-
-4. **PUT /api/todos/:id** - Update a todo
-
-   - Body: `{ title?: string, description?: string, completed?: boolean }`
-   - Returns: `{ success: true, data: {...} }`
-
-5. **DELETE /api/todos/:id** - Delete a todo
-
-   - Returns: `{ success: true, message: "Todo deleted" }`
-
-6. **GET /health** - Health check
-   - Returns: `{ status: "ok" }`
-
-### Data Structure
-
-```json
-{
-  "id": "unique-id",
-  "title": "Todo title",
-  "description": "Optional description",
-  "completed": false,
-  "createdAt": "ISO-8601 timestamp",
-  "updatedAt": "ISO-8601 timestamp"
-}
+```javascript
+reverseString("hello"); // returns "olleh"
+reverseString("world"); // returns "dlrow"
+reverseString(""); // returns ""
 ```
 
-### Validation Rules
+## Test Cases
 
-- `title` is required and must be a non-empty string
-- `completed` must be a boolean if provided
-- IDs should be unique
+Your solution will be tested against 10 test cases:
 
-## Testing
+- Basic strings
+- Empty strings
+- Strings with spaces
+- Strings with numbers
+- Special characters
+- Unicode characters
 
-The evaluation will:
+## Scoring
 
-1. Start your server on port 3000
-2. Test all endpoints with various scenarios
-3. Verify response formats and status codes
-4. Check data persistence within the session
-5. Measure response times
+- **Test Cases (80 points)**: Each test case passed awards points
+- **Code Quality (20 points)**: Based on code style and best practices
+  - Use of strict mode
+  - Proper comments
+  - Modern JavaScript syntax (const/let instead of var)
 
-## Expected Files
+## Submission Format
 
-Your submission should include:
+Submit a single `index.js` file that exports the `reverseString` function:
 
-- `package.json` - Dependencies (express, etc.)
-- `server.js` or `index.js` - Main server file
-- Any additional files needed
+```javascript
+function reverseString(str) {
+  // Your implementation here
+}
 
-The server should listen on port 3000 and be ready to accept requests.
+module.exports = { reverseString };
+```
+
+Good luck!

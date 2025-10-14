@@ -78,6 +78,88 @@ async function buildProblemImage(problemId, problemPackagePath, options = {}) {
 }
 
 /**
+ * Build a container image for a specific container in a multi-container problem
+ * @param {string} problemId - Problem identifier
+ * @param {string} containerId - Container identifier
+ * @param {string} containerPath - Path to container directory (containing Dockerfile)
+ * @param {object} options - Build options
+ * @returns {Promise<string>} Image name
+ */
+async function buildContainerImage(
+  problemId,
+  containerId,
+  containerPath,
+  options = {}
+) {
+  logger.info(`Building container image for ${problemId}/${containerId}`);
+
+  const imageName = `judgehost-${problemId}-${containerId}:latest`;
+
+  try {
+    // Create tar stream from container directory
+    const tarStream = tar.pack(containerPath);
+
+    // Build image
+    const stream = await docker.buildImage(tarStream, {
+      t: imageName,
+      dockerfile: options.dockerfile || "Dockerfile",
+      labels: {
+        "judgehost.problem_id": problemId,
+        "judgehost.container_id": containerId,
+        "judgehost.built_at": new Date().toISOString(),
+      },
+      buildargs: options.buildArgs || {},
+    });
+
+    // Process build stream
+    return new Promise((resolve, reject) => {
+      let timeoutHandle;
+
+      // Set timeout if specified
+      if (options.buildTimeout) {
+        timeoutHandle = setTimeout(() => {
+          reject(
+            new Error(`Build timeout after ${options.buildTimeout} seconds`)
+          );
+        }, options.buildTimeout * 1000);
+      }
+
+      docker.modem.followProgress(
+        stream,
+        (err, res) => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+
+          if (err) {
+            logger.error(
+              `Failed to build container image ${problemId}/${containerId}:`,
+              err
+            );
+            reject(err);
+          } else {
+            logger.info(`Successfully built container image ${imageName}`);
+            resolve(imageName);
+          }
+        },
+        (event) => {
+          if (event.stream) {
+            logger.debug(`Build [${containerId}]: ${event.stream.trim()}`);
+          }
+          if (event.error) {
+            logger.error(`Build error [${containerId}]: ${event.error}`);
+          }
+        }
+      );
+    });
+  } catch (error) {
+    logger.error(
+      `Error building container image ${problemId}/${containerId}:`,
+      error
+    );
+    throw error;
+  }
+}
+
+/**
  * Build evaluation image on top of problem image
  * @param {string} problemImage - Base problem image name
  * @param {string} submissionId - Submission identifier
@@ -210,13 +292,6 @@ async function createEvaluationContainer(
     options.memoryMB || problem.memoryMB || config.docker.defaultMemoryMB;
   const cpuCores =
     options.cpuCores || problem.cpuCores || config.docker.defaultCpuCores;
-
-  // Prepare command based on project type
-  let cmd = ["/bin/bash", "/utils/universal_entrypoint.sh"];
-  if (problem.projectType === "api" || problem.project_type === "api") {
-    // For API projects, start the server
-    cmd.push("npm", "start");
-  }
 
   // Create container config
   const containerConfig = {
@@ -965,21 +1040,35 @@ async function createContainerGroup(
           );
         }
 
-        // First build problem image if it has build steps
+        // Check if problem image already exists (built during registration)
+        const problemImageName = `judgehost-${problem.problemId}-${containerId}:latest`;
         let baseImage = containerConfig.base_image || "alpine:latest";
 
-        if (
-          containerConfig.build_steps &&
-          containerConfig.build_steps.length > 0
-        ) {
-          const problemImage = `judgehost-problem-${problem.problemId}-${containerId}:latest`;
-          await containerBuilder.buildProblemContainer(
-            problem.problemId,
-            containerConfig,
-            path.join(config.paths.problemsDir, problem.problemId),
-            {}
+        try {
+          // Try to get the problem image
+          const problemImage = docker.getImage(problemImageName);
+          await problemImage.inspect();
+          // Image exists, use it
+          baseImage = problemImageName;
+          logger.info(`Using pre-built problem image: ${problemImageName}`);
+        } catch (error) {
+          // Image doesn't exist, build it if we have build steps
+          logger.info(
+            `Problem image ${problemImageName} not found, checking for build steps`
           );
-          baseImage = problemImage;
+
+          if (
+            containerConfig.build_steps &&
+            containerConfig.build_steps.length > 0
+          ) {
+            await containerBuilder.buildProblemContainer(
+              problem.problemId,
+              containerConfig,
+              path.join(config.paths.problemsDir, problem.problemId),
+              {}
+            );
+            baseImage = problemImageName;
+          }
         }
 
         // Then build submission on top
@@ -1133,12 +1222,6 @@ async function createMultiContainer(
     Hostname: containerName,
     Env: envVars,
     WorkingDir: containerConfig.workdir || "/workspace",
-    Cmd: containerConfig.command
-      ? containerConfig.command.split(" ")
-      : undefined,
-    Entrypoint: containerConfig.entrypoint
-      ? containerConfig.entrypoint.split(" ")
-      : undefined,
     ExposedPorts: exposedPorts,
     Volumes: volumes, // Anonymous volumes for /workspace, /tmp, etc.
     HostConfig: {
@@ -1169,69 +1252,7 @@ async function createMultiContainer(
 
   const container = await docker.createContainer(dockerContainerConfig);
 
-  // If this container accepts submission, we need to populate the /workspace volume
-  // We do this by starting the container temporarily, copying files, then stopping it
-  if (containerConfig.accepts_submission && submissionPath) {
-    logger.debug(`Initializing workspace for container ${containerId}`);
-    await initializeWorkspace(container.id, submissionPath);
-  }
-
   return container.id;
-}
-
-/**
- * Initialize the /workspace volume with submission code
- * @param {string} containerId - Docker container ID
- * @param {string} submissionPath - Path to submission code on host
- * @returns {Promise<void>}
- */
-async function initializeWorkspace(containerId, submissionPath) {
-  const container = docker.getContainer(containerId);
-
-  try {
-    // Start container temporarily
-    await container.start();
-
-    // Execute command to copy from /submission to /workspace
-    const exec = await container.exec({
-      Cmd: ["/bin/sh", "-c", "cp -r /submission/. /workspace/"],
-      AttachStdout: true,
-      AttachStderr: true,
-    });
-
-    const stream = await exec.start();
-
-    // Wait for copy to complete
-    await new Promise((resolve, reject) => {
-      stream.on("end", async () => {
-        const inspectData = await exec.inspect();
-        if (inspectData.ExitCode === 0) {
-          resolve();
-        } else {
-          reject(
-            new Error(
-              `Failed to initialize workspace: exit code ${inspectData.ExitCode}`
-            )
-          );
-        }
-      });
-      stream.on("error", reject);
-    });
-
-    // Stop container
-    await container.stop();
-
-    logger.debug(`Workspace initialized for container ${containerId}`);
-  } catch (error) {
-    logger.error(`Failed to initialize workspace for ${containerId}:`, error);
-    // Try to stop container if it's still running
-    try {
-      await container.stop({ t: 1 });
-    } catch (e) {
-      // Ignore stop errors
-    }
-    throw error;
-  }
 }
 
 /**
@@ -1500,10 +1521,12 @@ function parseMemory(memory) {
 
 module.exports = {
   buildProblemImage,
+  buildContainerImage,
   buildEvaluationImage,
   createEvaluationContainer,
   executeContainer,
   getContainerLogs,
+  getDockerContainer: (containerId) => docker.getContainer(containerId),
   stopContainer,
   cleanup,
   copyFromContainer,

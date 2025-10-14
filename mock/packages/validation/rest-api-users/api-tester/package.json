@@ -1,8 +1,0 @@
-{
-  "name": "api-tester",
-  "version": "1.0.0",
-  "description": "API testing framework",
-  "dependencies": {
-    "axios": "^1.4.0"
-  }
-}

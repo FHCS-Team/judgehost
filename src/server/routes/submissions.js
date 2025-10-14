@@ -157,6 +157,8 @@ router.post("/", upload.single("submission_file"), async (req, res) => {
       .toString(36)
       .substring(2, 10)}`;
 
+    let localPath = null;
+
     if (package_type === "file") {
       const submissionDir = path.join(
         config.paths.submissionsDir,
@@ -178,6 +180,9 @@ router.post("/", upload.single("submission_file"), async (req, res) => {
         await downloader.extractBuffer(fileBuffer, submissionDir);
         await fs.rm(targetPath); // Remove archive after extraction
       }
+
+      // Set local path for processor
+      localPath = submissionDir;
     }
 
     // Parse priority
@@ -193,6 +198,7 @@ router.post("/", upload.single("submission_file"), async (req, res) => {
       gitUrl: git_url,
       gitBranch: git_branch || "main",
       gitCommit: git_commit,
+      localPath: localPath, // Local path for file uploads
       teamId: team_id,
       metadata: submission_metadata ? JSON.parse(submission_metadata) : {},
       priority: jobPriority,

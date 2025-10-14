@@ -33,9 +33,10 @@ if [ ! -f "$PROBLEM_DIR/config.json" ]; then
   exit 1
 fi
 
-if [ ! -f "$PROBLEM_DIR/Dockerfile" ]; then
-  echo "Error: Dockerfile not found in '$PROBLEM_DIR'"
-  exit 1
+# Check for Dockerfile (either in root or in container subdirectories)
+if [ ! -f "$PROBLEM_DIR/Dockerfile" ] && [ ! -d "$PROBLEM_DIR/submission" ] && [ ! -d "$PROBLEM_DIR/database" ]; then
+  echo "Warning: No Dockerfile found in root or container subdirectories"
+  echo "Continuing anyway - config.json may define container structure..."
 fi
 
 # Extract problem_id from config.json or use custom
@@ -60,20 +61,20 @@ echo "Problem Name: $PROBLEM_NAME"
 echo "API Base URL: $API_BASE_URL"
 echo ""
 
-# Create temporary zip file
+# Create temporary tar.gz file
 TEMP_DIR=$(mktemp -d)
-TEMP_ZIP="$TEMP_DIR/${PROBLEM_ID}.zip"
+TEMP_ARCHIVE="$TEMP_DIR/${PROBLEM_ID}.tar.gz"
 
-echo "Creating zip file..."
-(cd "$PROBLEM_DIR" && zip -r "$TEMP_ZIP" . -x "*.git*" "node_modules/*" ".DS_Store")
+echo "Creating tar.gz file..."
+(cd "$PROBLEM_DIR" && tar --exclude=".git*" --exclude="node_modules" --exclude=".DS_Store" -czf "$TEMP_ARCHIVE" .)
 
-echo "Zip file created: $TEMP_ZIP"
-echo "Zip file size: $(du -h "$TEMP_ZIP" | cut -f1)"
+echo "Archive created: $TEMP_ARCHIVE"
+echo "Archive size: $(du -h "$TEMP_ARCHIVE" | cut -f1)"
 echo ""
 
 # List contents for verification
-echo "Zip contents:"
-unzip -l "$TEMP_ZIP" | head -20
+echo "Archive contents:"
+tar -tzf "$TEMP_ARCHIVE" | head -20
 echo ""
 
 echo "=========================================="
@@ -87,7 +88,7 @@ HTTP_CODE=$(curl -s -o "$TEMP_DIR/response.json" -w "%{http_code}" \
   -F "problem_id=$PROBLEM_ID" \
   -F "problem_name=$PROBLEM_NAME" \
   -F "package_type=file" \
-  -F "problem_package=@$TEMP_ZIP")
+  -F "problem_package=@$TEMP_ARCHIVE")
 
 echo "HTTP Status Code: $HTTP_CODE"
 echo ""
