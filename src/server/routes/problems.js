@@ -18,9 +18,34 @@ const {
 
 const router = express.Router();
 
-// Configure multer for file uploads
+// Configure multer for file uploads with original filename preservation
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadsDir = path.join(config.paths.workDir, "uploads");
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    // Preserve the original file extension, including compound extensions like .tar.gz
+    const timestamp = Date.now();
+    const randomString = Math.random().toString(36).substring(2, 15);
+    const originalName = file.originalname;
+
+    // Handle compound extensions (.tar.gz, .tar.bz2, etc.)
+    let ext = "";
+    if (originalName.match(/\.tar\.(gz|bz2|xz)$/i)) {
+      // Extract compound extension
+      const match = originalName.match(/(\.[^.]+\.[^.]+)$/);
+      ext = match ? match[1] : path.extname(originalName);
+    } else {
+      ext = path.extname(originalName);
+    }
+
+    cb(null, `${timestamp}-${randomString}${ext}`);
+  },
+});
+
 const upload = multer({
-  dest: path.join(config.paths.workDir, "uploads"),
+  storage: storage,
   limits: {
     fileSize: config.api.maxUploadSizeMB * 1024 * 1024, // Convert MB to bytes
   },
@@ -31,8 +56,18 @@ const upload = multer({
  * Register a new problem package
  */
 router.post("/", upload.single("problem_package"), async (req, res) => {
+  let problem_id, problem_name, package_type, packagePath;
+  let package_url,
+    archive_checksum,
+    git_url,
+    git_branch,
+    git_commit,
+    project_type,
+    force_rebuild,
+    timeout;
+
   try {
-    const {
+    ({
       problem_id,
       problem_name,
       package_type,
@@ -44,7 +79,7 @@ router.post("/", upload.single("problem_package"), async (req, res) => {
       project_type,
       force_rebuild,
       timeout,
-    } = req.body;
+    } = req.body);
 
     // Validate required fields
     if (!problem_id || !problem_name || !package_type) {
@@ -57,8 +92,6 @@ router.post("/", upload.single("problem_package"), async (req, res) => {
         },
       });
     }
-
-    let packagePath;
 
     // Handle different package types
     switch (package_type) {
@@ -156,7 +189,15 @@ router.post("/", upload.single("problem_package"), async (req, res) => {
     }
 
     // Process problem package
-    logger.info(`Registering problem: ${problem_id}`);
+    logger.info(`Registering problem: ${problem_id}`, {
+      problem_id,
+      problem_name,
+      package_type,
+      package_path: packagePath,
+      project_type,
+      force_rebuild,
+    });
+
     const result = await processProblemPackage(problem_id, packagePath, {
       projectType: project_type,
       forceRebuild: force_rebuild === "true",
@@ -165,6 +206,11 @@ router.post("/", upload.single("problem_package"), async (req, res) => {
 
     // Cleanup temporary files
     await fs.rm(packagePath, { recursive: true, force: true }).catch(() => {});
+
+    logger.info(`Problem ${problem_id} registered successfully`, {
+      problem_id: result.problemId,
+      image_name: result.imageName,
+    });
 
     res.status(201).json({
       success: true,
@@ -177,12 +223,44 @@ router.post("/", upload.single("problem_package"), async (req, res) => {
       },
     });
   } catch (error) {
-    logger.error("Error registering problem:", error);
+    logger.error(`Error registering problem ${problem_id}:`, {
+      problem_id,
+      problem_name,
+      package_type,
+      error: error.message,
+      stack: error.stack,
+      packagePath,
+    });
 
-    res.status(500).json({
+    // Determine appropriate error status code
+    let statusCode = 500;
+    let errorType = "registration_failed";
+
+    if (error.message.includes("must contain config.json")) {
+      statusCode = 400;
+      errorType = "invalid_package_structure";
+    } else if (error.message.includes("must contain Dockerfile")) {
+      statusCode = 400;
+      errorType = "invalid_package_structure";
+    } else if (error.message.includes("Problem ID in config.json")) {
+      statusCode = 400;
+      errorType = "config_mismatch";
+    } else if (error.message.includes("Failed to extract")) {
+      statusCode = 400;
+      errorType = "extraction_failed";
+    } else if (error.message.includes("Docker build")) {
+      statusCode = 500;
+      errorType = "build_failed";
+    }
+
+    res.status(statusCode).json({
       success: false,
-      error: "registration_failed",
+      error: errorType,
       message: error.message,
+      details: {
+        problem_id,
+        package_type,
+      },
     });
   }
 });

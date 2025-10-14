@@ -98,8 +98,8 @@ async function buildEvaluationImage(
     const dockerfile = `
 FROM ${problemImage}
 
-# Copy submission code
-COPY . /workspace/
+# Copy submission code to submission directory
+COPY . /workspace/submission/
 
 # Set working directory
 WORKDIR /workspace
@@ -185,10 +185,12 @@ async function createEvaluationContainer(
     `PROBLEM_TYPE=${problem.projectType || "algorithm"}`,
     `EVAL_TIMESTAMP=${new Date().toISOString()}`,
     `WORKSPACE_DIR=/workspace`,
-    `OUTPUT_DIR=/out`,
-    `PROBLEM_DIR=/problem`,
+    `OUT_DIR=/out`,
+    `PROBLEM_DIR=/workspace/problem`,
+    `SUBMISSION_DIR=/workspace/submission`,
     `HOOKS_DIR=/hooks`,
     `UTILS_DIR=/utils`,
+    `TOOLS_DIR=/utils`,
     ...Object.entries(problem.environment || {}).map(([k, v]) => `${k}=${v}`),
   ];
 
@@ -198,13 +200,20 @@ async function createEvaluationContainer(
   const cpuCores =
     options.cpuCores || problem.cpuCores || config.docker.defaultCpuCores;
 
+  // Prepare command based on project type
+  let cmd = ["/bin/bash", "/utils/universal_entrypoint.sh"];
+  if (problem.projectType === "api" || problem.project_type === "api") {
+    // For API projects, start the server
+    cmd.push("npm", "start");
+  }
+
   // Create container config
   const containerConfig = {
     Image: imageId,
     name: containerName,
     Env: envVars,
     WorkingDir: "/workspace",
-    Cmd: options.cmd || ["/bin/bash", "/utils/universal_entrypoint.sh"],
+    Cmd: options.cmd || cmd,
     HostConfig: {
       // Network configuration
       NetworkMode: problem.networkEnabled ? "bridge" : "none",
@@ -222,7 +231,15 @@ async function createEvaluationContainer(
           : [],
 
       // Bind mounts
-      Binds: [`${path.join(config.paths.resultsDir, submissionId)}:/out:rw`],
+      Binds: [
+        `${path.join(config.paths.resultsDir, submissionId)}:/out:rw`,
+        `${path.join(__dirname, "../../docker/tools")}:/utils:ro`,
+        `${path.join(
+          config.paths.problemsDir,
+          problem.problemId,
+          "hooks"
+        )}:/hooks:ro`,
+      ],
 
       // Auto-remove (if configured)
       AutoRemove: false, // We'll handle cleanup manually

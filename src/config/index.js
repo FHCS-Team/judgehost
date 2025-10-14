@@ -12,6 +12,23 @@ try {
   // dotenv not installed or no .env file - continue with process.env
 }
 
+/**
+ * Helper function to resolve paths (converts relative paths to absolute)
+ * @param {string} pathStr - The path to resolve
+ * @returns {string} - Absolute path
+ */
+function resolvePath(pathStr) {
+  if (!pathStr) return pathStr;
+
+  // If it's already absolute, return as-is
+  if (path.isAbsolute(pathStr)) {
+    return pathStr;
+  }
+
+  // Resolve relative to the project root (where package.json is)
+  return path.resolve(process.cwd(), pathStr);
+}
+
 const config = {
   // Node environment
   nodeEnv: process.env.NODE_ENV || "development",
@@ -74,14 +91,19 @@ const config = {
 
   // File system paths
   paths: {
-    workDir: process.env.JUDGEHOST_WORK_DIR || "/tmp/judgehost",
-    problemsDir:
-      process.env.JUDGEHOST_PROBLEMS_DIR || "/var/lib/judgehost/problems",
-    submissionsDir:
-      process.env.JUDGEHOST_SUBMISSIONS_DIR || "/var/lib/judgehost/submissions",
-    resultsDir:
-      process.env.JUDGEHOST_RESULTS_DIR || "/var/lib/judgehost/results",
-    logsDir: process.env.JUDGEHOST_LOGS_DIR || "/var/log/judgehost",
+    workDir: resolvePath(process.env.JUDGEHOST_WORK_DIR || "/tmp/judgehost"),
+    problemsDir: resolvePath(
+      process.env.JUDGEHOST_PROBLEMS_DIR || "/var/lib/judgehost/problems"
+    ),
+    submissionsDir: resolvePath(
+      process.env.JUDGEHOST_SUBMISSIONS_DIR || "/var/lib/judgehost/submissions"
+    ),
+    resultsDir: resolvePath(
+      process.env.JUDGEHOST_RESULTS_DIR || "/var/lib/judgehost/results"
+    ),
+    logsDir: resolvePath(
+      process.env.JUDGEHOST_LOGS_DIR || "/var/log/judgehost"
+    ),
   },
 
   // API server configuration

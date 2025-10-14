@@ -1,0 +1,43 @@
+{
+  "problem_id": "nodejs-api",
+  "problem_name": "Simple Node.js REST API",
+  "description": "Create a RESTful API server with Express.js that manages a simple todo list with CRUD operations",
+  "project_type": "api",
+  "resource_limits": {
+    "memory": "512m",
+    "cpus": 2,
+    "timeout": 60
+  },
+  "rubrics": [
+    {
+      "rubric_id": "functionality",
+      "rubric_name": "API Functionality",
+      "rubric_type": "numeric",
+      "max_score": 50,
+      "weight": 1,
+      "description": "All endpoints work correctly and return expected responses"
+    },
+    {
+      "rubric_id": "data_validation",
+      "rubric_name": "Data Validation",
+      "rubric_type": "numeric",
+      "max_score": 30,
+      "weight": 0.8,
+      "description": "Proper input validation and error handling"
+    },
+    {
+      "rubric_id": "performance",
+      "rubric_name": "Performance",
+      "rubric_type": "numeric",
+      "max_score": 20,
+      "weight": 0.5,
+      "description": "Response times are acceptable"
+    }
+  ],
+  "metadata": {
+    "difficulty": "medium",
+    "category": "web-development",
+    "tags": ["nodejs", "express", "rest-api", "crud"],
+    "expected_port": 3000
+  }
+}

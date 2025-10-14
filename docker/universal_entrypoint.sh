@@ -1,117 +1,274 @@
 #!/bin/sh
+# universal_entrypoint.sh: Main orchestrator for container execution
+# This script runs inside evaluation containers and orchestrates the entire evaluation workflow
+#
+# Expected directory structure:
+#   /workspace/problem/    - Problem files (from problem image)
+#   /workspace/submission/ - Submission code (mounted)
+#   /workspace/out/        - Output directory for results
+#   /workspace/tools/      - This script and helper tools
+#
+# Execution flow:
+#   1. Set up environment and directories
+#   2. Run pre-deployment hooks (problem setup, dependency installation)
+#   3. Start the submission application
+#   4. Run post-deployment hooks (tests, evaluation)
+#   5. Collect results and write to /workspace/out/
+
 set -e
 
-# Universal Entrypoint: runs hooks and tools for any project type
-# Assumes /tools is mounted from docker/tools (or copied to $PWD/tools)
+# ============================================================================
+# Environment Setup
+# ============================================================================
 
-WORKDIR="$(pwd)"
-TOOLS_DIR="$WORKDIR/tools"
-HOOKS_DIR="$WORKDIR/hooks"
-PRE_HOOKS="$HOOKS_DIR/pre"
-POST_HOOKS="$HOOKS_DIR/post"
-PERIODIC_HOOKS="$HOOKS_DIR/periodic"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
+PROBLEM_DIR="${PROBLEM_DIR:-$WORKSPACE_DIR/problem}"
+SUBMISSION_DIR="${SUBMISSION_DIR:-$WORKSPACE_DIR/submission}"
+OUT_DIR="${OUT_DIR:-$WORKSPACE_DIR/out}"
+TOOLS_DIR="${TOOLS_DIR:-$WORKSPACE_DIR/tools}"
 
-# Ensure runtime temporary directories exist for hooks/tools
-JUDGE_TMP_DIR="/tmp/judgehost"
-JUDGE_LOGS_DIR="$JUDGE_TMP_DIR/logs"
-JUDGE_CACHE_DIR="$JUDGE_TMP_DIR/cache"
-JUDGE_TEMP_DIR="$JUDGE_TMP_DIR/temp"
-mkdir -p "$JUDGE_LOGS_DIR" "$JUDGE_CACHE_DIR" "$JUDGE_TEMP_DIR"
-chmod 0755 "$JUDGE_TMP_DIR" || true
+# Hook directories in problem package
+PRE_HOOKS="$PROBLEM_DIR/hooks/pre"
+POST_HOOKS="$PROBLEM_DIR/hooks/post"
+PERIODIC_HOOKS="$PROBLEM_DIR/hooks/periodic"
 
-# Export JUDGE_LOGS_DIR for hooks/tools so they can write to the tmp logs location
-export JUDGE_LOGS_DIR
+# Temporary directories for runtime data
+TMP_DIR="/tmp/judgehost"
+LOGS_DIR="$TMP_DIR/logs"
+CACHE_DIR="$TMP_DIR/cache"
+STATUS_DIR="$TMP_DIR/status"
 
-# Create status directory for programmatic markers
-STATUS_DIR="/tmp/judgehost-status"
-mkdir -p "$STATUS_DIR"
+# Create required directories
+mkdir -p "$OUT_DIR" "$LOGS_DIR" "$CACHE_DIR" "$STATUS_DIR"
+chmod -R 0755 "$TMP_DIR" 2>/dev/null || true
+
+# Export environment variables for hooks
+export WORKSPACE_DIR
+export PROBLEM_DIR
+export SUBMISSION_DIR
+export OUT_DIR
+export LOGS_DIR
+export CACHE_DIR
+export STATUS_DIR
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+log() {
+    echo "[ENTRYPOINT] $*" | tee -a "$LOGS_DIR/entrypoint.log"
+}
+
+error() {
+    echo "[ENTRYPOINT ERROR] $*" | tee -a "$LOGS_DIR/entrypoint.log" >&2
+}
+
+set_status() {
+    echo "$2" > "$STATUS_DIR/$1"
+    log "Status: $1 = $2"
+}
 
 get_status() {
     [ -f "$STATUS_DIR/$1" ] && cat "$STATUS_DIR/$1"
 }
 
-# Use script_runner.sh for hook execution
+# ============================================================================
+# Hook Execution
+# ============================================================================
+
 SCRIPT_RUNNER="$TOOLS_DIR/script_runner.sh"
 
-# Ensure script_runner and any hooks are executable. This helps when files are copied into the image
-# without executable bit (common with some CI or Windows hosts).
-if [ -f "$SCRIPT_RUNNER" ] && [ ! -x "$SCRIPT_RUNNER" ]; then
-	chmod +x "$SCRIPT_RUNNER" || true
-fi
-if [ -d "$HOOKS_DIR" ]; then
-	find "$HOOKS_DIR" -type f -exec chmod a+x {} + 2>/dev/null || true
-fi
-
-
-# Run all executable scripts in tools directory (flat), excluding script_runner.sh
-run_tools() {
-	if [ -d "$TOOLS_DIR" ]; then
-		for script in "$TOOLS_DIR"/*; do
-			# Skip the script_runner.sh utility
-			[ "$(basename "$script")" = "script_runner.sh" ] && continue
-			[ -x "$script" ] && "$script"
-		done
-	fi
+# Make all scripts executable (helps with mounted volumes)
+ensure_executable() {
+    local dir="$1"
+    if [ -d "$dir" ]; then
+        find "$dir" -type f -exec chmod +x {} + 2>/dev/null || true
+    fi
 }
 
-# Run pre-execution hooks
-if [ -d "$PRE_HOOKS" ]; then
-	"$SCRIPT_RUNNER" "$PRE_HOOKS"
+ensure_executable "$TOOLS_DIR"
+ensure_executable "$PROBLEM_DIR/hooks"
+
+# Ensure script runner is executable
+if [ -f "$SCRIPT_RUNNER" ] && [ ! -x "$SCRIPT_RUNNER" ]; then
+    chmod +x "$SCRIPT_RUNNER" 2>/dev/null || true
 fi
 
-# Start periodic hooks in background, supporting custom timer
-if [ -d "$PERIODIC_HOOKS" ]; then
-	"$SCRIPT_RUNNER" "$PERIODIC_HOOKS" periodic
-fi
+run_hooks() {
+    local hook_dir="$1"
+    local hook_type="$2"
+    
+    if [ ! -d "$hook_dir" ]; then
+        log "No $hook_type hooks found in $hook_dir"
+        return 0
+    fi
+    
+    log "Running $hook_type hooks..."
+    set_status "current_stage" "$hook_type"
+    
+    if [ -f "$SCRIPT_RUNNER" ]; then
+        "$SCRIPT_RUNNER" "$hook_dir" 2>&1 | tee -a "$LOGS_DIR/${hook_type}_hooks.log"
+    else
+        error "Script runner not found: $SCRIPT_RUNNER"
+        # Fallback: run hooks directly
+        for script in "$hook_dir"/*; do
+            if [ -x "$script" ]; then
+                log "Running: $(basename "$script")"
+                "$script" 2>&1 | tee -a "$LOGS_DIR/${hook_type}_hooks.log"
+            fi
+        done
+    fi
+    
+    log "$hook_type hooks completed"
+}
 
-# Run all tools in tools directory
-run_tools
+# ============================================================================
+# Main Execution Flow
+# ============================================================================
 
-# Run main application (pass all args to this script)
-if [ $# -gt 0 ]; then
-	"$@"
-	exit_code=$?
-	
-	# Run post-execution hooks
-	if [ -d "$POST_HOOKS" ]; then
-		"$SCRIPT_RUNNER" "$POST_HOOKS"
-	fi
+main() {
+    log "Starting evaluation..."
+    log "Problem: $PROBLEM_DIR"
+    log "Submission: $SUBMISSION_DIR"
+    log "Output: $OUT_DIR"
+    
+    set_status "started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    set_status "current_stage" "initializing"
+    
+    # Stage 1: Run pre-deployment hooks
+    if [ -d "$PRE_HOOKS" ]; then
+        run_hooks "$PRE_HOOKS" "pre"
+    fi
+    
+    # Stage 2: Start periodic monitoring in background
+    if [ -d "$PERIODIC_HOOKS" ]; then
+        log "Starting periodic hooks..."
+        if [ -f "$SCRIPT_RUNNER" ]; then
+            "$SCRIPT_RUNNER" "$PERIODIC_HOOKS" periodic &
+            PERIODIC_PID=$!
+            log "Periodic hooks started (PID: $PERIODIC_PID)"
+        fi
+    fi
+    
+    # Stage 3: Run the submission application (if arguments provided)
+    if [ $# -gt 0 ]; then
+        log "Starting submission: $*"
+        set_status "current_stage" "running_submission"
+        
+        # Run submission and capture exit code
+        set +e
+        "$@" 2>&1 | tee -a "$LOGS_DIR/submission.log"
+        EXIT_CODE=$?
+        set -e
+        
+        log "Submission exited with code: $EXIT_CODE"
+        set_status "submission_exit_code" "$EXIT_CODE"
+        
+        # Give submission time to finish cleanup
+        sleep 2
+    else
+        log "No submission command provided, running hooks only"
+        EXIT_CODE=0
+    fi
+    
+    # Stage 4: Run post-deployment hooks (evaluation)
+    if [ -d "$POST_HOOKS" ]; then
+        run_hooks "$POST_HOOKS" "post"
+    fi
+    
+    # Stage 5: Stop periodic hooks
+    if [ -n "${PERIODIC_PID:-}" ]; then
+        log "Stopping periodic hooks..."
+        kill "$PERIODIC_PID" 2>/dev/null || true
+        wait "$PERIODIC_PID" 2>/dev/null || true
+    fi
+    
+    # Stage 6: Collect results
+    set_status "current_stage" "collecting_results"
+    log "Collecting results..."
+    
+    # Copy all rubric JSON files to output
+    if [ -d "$TMP_DIR" ]; then
+        find "$TMP_DIR" -name "rubric_*.json" -exec cp {} "$OUT_DIR/" \; 2>/dev/null || true
+    fi
+    
+    # Copy logs to output
+    if [ -d "$LOGS_DIR" ]; then
+        cp -r "$LOGS_DIR" "$OUT_DIR/logs" 2>/dev/null || true
+    fi
+    
+    # Copy status to output
+    if [ -d "$STATUS_DIR" ]; then
+        cp -r "$STATUS_DIR" "$OUT_DIR/status" 2>/dev/null || true
+    fi
+    
+    # Create summary file
+    cat > "$OUT_DIR/summary.json" <<EOF
+{
+  "started_at": "$(get_status started_at)",
+  "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "submission_exit_code": ${EXIT_CODE},
+  "status": "completed"
+}
+EOF
+    
+    set_status "current_stage" "completed"
+    set_status "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    
+    log "Evaluation completed successfully"
+    
+    # Display logs if requested
+    if [ "${SHOW_LOGS:-0}" = "1" ]; then
+        echo ""
+        echo "===== Execution Logs ====="
+        [ -f "$LOGS_DIR/entrypoint.log" ] && cat "$LOGS_DIR/entrypoint.log"
+        [ -f "$LOGS_DIR/submission.log" ] && echo "" && echo "=== Submission ===" && tail -n 100 "$LOGS_DIR/submission.log"
+        [ -f "$LOGS_DIR/pre_hooks.log" ] && echo "" && echo "=== Pre Hooks ===" && tail -n 100 "$LOGS_DIR/pre_hooks.log"
+        [ -f "$LOGS_DIR/post_hooks.log" ] && echo "" && echo "=== Post Hooks ===" && tail -n 100 "$LOGS_DIR/post_hooks.log"
+        echo "===== End Logs ====="
+    fi
+    
+    return $EXIT_CODE
+}
 
-	# If requested, display the monitor log (useful for CI/test runs). Non-fatal if file missing.
-	if [ "${SHOW_LOGS:-}" = "1" ] || [ "${SHOW_LOGS:-}" = "true" ]; then
-		# Look for standard monitor log and fallback to tmp logs directory used in tests
-		LOG_PATH="/var/log/judgehost/monitor.log"
-		TMP_LOG_DIR="$JUDGE_LOGS_DIR"
-		printed=0
-		if [ -f "$LOG_PATH" ]; then
-			echo
-			echo "===== monitor log (tail 200) $LOG_PATH ====="
-			tail -n 200 "$LOG_PATH" || true
-			echo "===== end monitor log ====="
-			printed=1
-		fi
+# ============================================================================
+# Error Handling
+# ============================================================================
 
-		# If tmp logs directory exists, show recent files
-		if [ -d "$TMP_LOG_DIR" ]; then
-			# show newest log files (up to 5), non-fatal
-			for f in $(ls -1t "$TMP_LOG_DIR" 2>/dev/null | head -n 5); do
-				fp="$TMP_LOG_DIR/$f"
-				if [ -f "$fp" ]; then
-					echo
-					echo "===== tmp log: $fp (tail 200) ====="
-					tail -n 200 "$fp" || true
-					echo "===== end tmp log ====="
-					printed=1
-				fi
-			done
-		fi
+cleanup() {
+    local exit_code=$?
+    
+    if [ $exit_code -ne 0 ]; then
+        error "Execution failed with code: $exit_code"
+        set_status "current_stage" "failed"
+        set_status "error_code" "$exit_code"
+        
+        # Create error summary
+        cat > "$OUT_DIR/summary.json" <<EOF
+{
+  "started_at": "$(get_status started_at)",
+  "completed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "submission_exit_code": ${exit_code},
+  "status": "failed",
+  "error": "Execution failed"
+}
+EOF
+        
+        # Copy logs even on failure
+        [ -d "$LOGS_DIR" ] && cp -r "$LOGS_DIR" "$OUT_DIR/logs" 2>/dev/null || true
+        [ -d "$STATUS_DIR" ] && cp -r "$STATUS_DIR" "$OUT_DIR/status" 2>/dev/null || true
+    fi
+    
+    # Kill any background processes
+    if [ -n "${PERIODIC_PID:-}" ]; then
+        kill "$PERIODIC_PID" 2>/dev/null || true
+    fi
+}
 
-		if [ "$printed" -eq 0 ]; then
-			echo "(SHOW_LOGS enabled but no logs found in $LOG_PATH or $TMP_LOG_DIR)"
-		fi
-	fi
+trap cleanup EXIT
 
-	exit $exit_code
-else
-	exit 1
-fi
+# ============================================================================
+# Entry Point
+# ============================================================================
+
+main "$@"

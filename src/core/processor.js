@@ -567,26 +567,46 @@ function initializeProcessor() {
  * Process a problem package (register problem)
  */
 async function processProblemPackage(problemId, packagePath, options = {}) {
-  logger.info(`Processing problem package: ${problemId}`);
+  logger.info(`Processing problem package: ${problemId}`, {
+    problemId,
+    packagePath,
+    options,
+  });
 
   const problemDir = path.join(config.paths.problemsDir, problemId);
 
   try {
     // Create problem directory
     await fs.mkdir(problemDir, { recursive: true });
+    logger.debug(`Created problem directory: ${problemDir}`);
 
     // Extract package to problem directory
+    logger.info(`Extracting package to: ${problemDir}`);
     if (packagePath.endsWith(".tar.gz") || packagePath.endsWith(".zip")) {
-      const packageBuffer = await fs.readFile(packagePath);
-      await downloader.extractBuffer(packageBuffer, problemDir);
+      try {
+        const packageBuffer = await fs.readFile(packagePath);
+        logger.debug(`Package buffer size: ${packageBuffer.length} bytes`);
+        await downloader.extractBuffer(packageBuffer, problemDir);
+        logger.info(`Successfully extracted package`);
+      } catch (extractError) {
+        logger.error(`Failed to extract package:`, {
+          error: extractError.message,
+          packagePath,
+          problemDir,
+        });
+        throw new Error(`Failed to extract package: ${extractError.message}`);
+      }
     } else {
       // Assume it's already a directory
+      logger.info(`Copying directory from ${packagePath} to ${problemDir}`);
       await fs.cp(packagePath, problemDir, { recursive: true });
     }
 
     // Validate problem structure
     const configPath = path.join(problemDir, "config.json");
     const dockerfilePath = path.join(problemDir, "Dockerfile");
+
+    logger.debug(`Validating problem structure in ${problemDir}`);
 
     const configExists = await fs
       .access(configPath)
@@ -597,19 +617,52 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       .then(() => true)
       .catch(() => false);
 
+    // List directory contents for debugging
+    try {
+      const dirContents = await fs.readdir(problemDir);
+      logger.debug(`Problem directory contents:`, {
+        problemDir,
+        files: dirContents,
+      });
+    } catch (readError) {
+      logger.warn(`Could not read problem directory`, readError);
+    }
+
     if (!configExists) {
+      logger.error(`Missing config.json in problem package`, {
+        problemId,
+        expectedPath: configPath,
+        problemDir,
+      });
       throw new Error("Problem package must contain config.json");
     }
 
     if (!dockerfileExists) {
+      logger.error(`Missing Dockerfile in problem package`, {
+        problemId,
+        expectedPath: dockerfilePath,
+        problemDir,
+      });
       throw new Error("Problem package must contain Dockerfile");
     }
 
     // Load and validate config
+    logger.info(`Loading and validating config.json`);
     const configContent = await fs.readFile(configPath, "utf8");
     const config = JSON.parse(configContent);
 
-    if (!config.problemId || config.problemId !== problemId) {
+    logger.debug(`Parsed config:`, { config });
+
+    // Support both snake_case (problem_id) and camelCase (problemId)
+    const configProblemId = config.problem_id || config.problemId;
+
+    if (!configProblemId || configProblemId !== problemId) {
+      logger.error(`Problem ID mismatch`, {
+        expectedId: problemId,
+        actualId: configProblemId,
+        configPath,
+        configKeys: Object.keys(config),
+      });
       throw new Error("Problem ID in config.json does not match");
     }
 
@@ -621,7 +674,10 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       options
     );
 
-    logger.info(`Problem ${problemId} registered successfully`);
+    logger.info(`Problem ${problemId} registered successfully`, {
+      problemId,
+      imageName,
+    });
 
     return {
       problemId,
@@ -630,7 +686,16 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       registeredAt: new Date().toISOString(),
     };
   } catch (error) {
+    logger.error(`Failed to process problem package:`, {
+      problemId,
+      packagePath,
+      problemDir,
+      error: error.message,
+      stack: error.stack,
+    });
+
     // Cleanup on failure
+    logger.info(`Cleaning up failed problem directory: ${problemDir}`);
     await fs.rm(problemDir, { recursive: true, force: true }).catch(() => {});
     throw new Error(`Failed to process problem package: ${error.message}`);
   }
