@@ -98,7 +98,7 @@ curl -X POST http://localhost:3000/api/submissions \
   -F "package_type=file" \
   -F "submission_file=@my-solution.zip" \
   -F "team_id=team-42" \
-  -F 'submission_metadata={"student_id": "s12345", "attempt": 3}' \
+  -F 'submission_metadata={"submission_id": "s12345", "attempt": 3}' \
   -F "notification_url=https://lms.example.com/api/webhooks/submission-complete"
 ```
 

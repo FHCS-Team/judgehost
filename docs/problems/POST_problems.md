@@ -109,7 +109,7 @@ Problems define evaluation logic through hooks in three categories:
     {
       "container_id": "string (required) - unique identifier",
       "container_name": "string (optional) - human-readable name",
-      "accepts_submission": "boolean (default: false) - true if this container receives student code",
+      "accepts_submission": "boolean (default: false) - true if this container receives submission code",
       "dockerfile_path": "string (required) - path to Dockerfile within package (e.g., 'submission/Dockerfile')",
       "environment": "object (optional) - environment variables",
       "resource_limits": {

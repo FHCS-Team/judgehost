@@ -16,9 +16,8 @@ This document explains how problem resources (hooks, data, test files) are inclu
 Problem packages contain resources that need to be available during evaluation:
 
 - **Hooks**: Scripts for evaluation logic (pre, post, periodic) - **Executed outside containers via docker exec**
-- **Tools**: Helper scripts and utilities - **Executed inside containers via entrypoint.sh**
-- **Data**: Test data, expected outputs, validation files
-- **Resources**: Additional files (schemas, configs, utilities)
+- **Tools**: Helper scripts and utilities
+- **Data**: Test data, expected outputs, validation files, schemas, configs, utilities
 
 These resources are mounted into containers at specific paths, making them accessible to hooks and evaluation logic.
 
@@ -44,27 +43,31 @@ docker exec <container_id> /hooks/post/01_test_api.sh
 
 ### Tools (Internal Execution)
 
-**Tools are executed INSIDE containers via entrypoint.sh:**
+**Tools are executed INSIDE containers**:
 
-- Bundled in the container image
-- Called by the container's entrypoint script
+- Custom scripts specific to the problem
+- Copied into image during build (Stage 1)
+- Can be called by hooks or entrypoint
+
+**Execution context:**
+
 - Run in the container's environment
 - No access to orchestration layer
-- Execute as part of container startup/runtime
+- Can be invoked by entrypoint or called from hooks
 
-**Example tool execution:**
+**Example tool usage in Dockerfile:**
 
 ```dockerfile
-# In Dockerfile
-COPY tools/ /tools/
-ENTRYPOINT ["/tools/universal_entrypoint.sh"]
+# Copy problem-specific tools
+COPY tools/ /tools/problem/
+
+# Tools can be used in entrypoint or called from hooks
+ENTRYPOINT ["/tools/downloader.sh"]
 ```
 
 ---
 
 ## Problem Package Structure
-
-### Multi-Container Architecture (Recommended)
 
 ```
 problem-package/
@@ -75,17 +78,15 @@ problem-package/
 │   ├── hooks/               # Hooks for this container (executed via docker exec)
 │   │   ├── pre/
 │   │   └── post/
-│   ├── tools/               # Tools for this container (executed via entrypoint.sh)
-│   │   └── startup.sh
-│   ├── data/                # Container-specific data
-│   └── resources/           # Container-specific resources
+│   ├── tools/               # Problem-specific tools (baked into image)
+│   │   └── custom_validator.sh
+│   └── data/                # Container-specific data
 ├── container-2/             # Second container (e.g., api-tester)
 │   ├── Dockerfile
 │   ├── hooks/
-│   ├── data/
-│   └── resources/
+│   ├── tools/
+│   └── data/
 ├── data/                    # Shared data (available to all containers)
-├── resources/               # Shared resources (available to all containers)
 └── README.md
 ```
 
@@ -102,11 +103,11 @@ When a container starts, problem resources are automatically mounted:
 ```
 Container Filesystem:
 /
-├── tools/                   # Judgehost default tools (provided by system)
+├── tools/                   # Tools directory
 │   ├── universal_entrypoint.sh
-│   ├── downloader.sh
 │   ├── script_runner.sh
-│   └── monitor.sh
+│   ├── monitor.sh
+|   └── custom_validator.sh
 ├── hooks/                   # Problem hooks (from problem package)
 │   ├── pre/
 │   ├── post/
@@ -114,15 +115,14 @@ Container Filesystem:
 ├── data/                    # Problem data (from problem package)
 │   ├── test-cases/
 │   ├── fixtures/
-│   └── schemas/
-├── resources/               # Problem resources (from problem package)
+│   ├── schemas/
 │   ├── validators/
 │   ├── utils/
 │   └── configs/
-├── submission/              # Submission code (from student submission)
-│   └── [student files]
+├── submission/              # Submission code (from submission submission)
+│   └── [submission files]
 ├── workspace/               # Working directory (writable copy of submission)
-│   └── [student files]
+│   └── [submission files]
 ├── out/                     # Output directory (writable)
 │   ├── rubric_*.json        # Rubric evaluation results
 │   ├── logs/                # Additional logs
@@ -133,16 +133,15 @@ Container Filesystem:
 
 ### Mount Behavior
 
-| Path           | Source             | Permissions | Description                     |
-| -------------- | ------------------ | ----------- | ------------------------------- |
-| `/tools/`      | Judgehost system   | Read-only   | Default tools and utilities     |
-| `/hooks/`      | Problem package    | Read-only   | Evaluation hooks                |
-| `/data/`       | Problem package    | Read-only   | Test data and fixtures          |
-| `/resources/`  | Problem package    | Read-only   | Additional resources            |
-| `/submission/` | Student submission | Read-only   | Original submission (immutable) |
-| `/workspace/`  | Copy of submission | Read-write  | Working directory for execution |
-| `/out/`        | Container-specific | Read-write  | Output directory for results    |
-| `/tmp/`        | Container-specific | Read-write  | Temporary storage               |
+| Path           | Source                | Permissions | Description                     |
+| -------------- | --------------------- | ----------- | ------------------------------- |
+| `/tools/`      | Problem package       | Read-only   | Problem-specific scripts        |
+| `/hooks/`      | Problem package       | Read-only   | Evaluation hooks                |
+| `/data/`       | Problem package       | Read-only   | Test data, schemas, utilities   |
+| `/submission/` | submission submission | Read-only   | Original submission (immutable) |
+| `/workspace/`  | Copy of submission    | Read-write  | Working directory for execution |
+| `/out/`        | Container-specific    | Read-write  | Output directory for results    |
+| `/tmp/`        | Container-specific    | Read-write  | Temporary storage               |
 
 ---
 
@@ -166,24 +165,23 @@ problem-package/
 │   │   └── post/
 │   │       ├── 01_security_scan.sh
 │   │       └── 02_code_quality.sh
-│   └── tools/               # Executed via entrypoint.sh
-│       └── startup_check.sh
+│   └── tools/               # Problem-specific tools (baked into image)
+│       └── code_analyzer.sh
 ├── api-tester/              # Resources for tester container
 │   ├── Dockerfile
 │   ├── hooks/               # Executed via docker exec
 │   │   └── post/
 │   │       ├── 01_test_endpoints.sh
 │   │       └── 02_performance_test.sh
+│   ├── tools/               # Problem-specific tools (baked into image)
+│   │   └── api_client.sh
 │   └── data/
 │       └── test_cases/
 │           └── api_tests.json
-├── data/                    # Shared across all containers
-│   └── schemas/
-│       ├── user_schema.json
-│       └── response_schema.json
-└── resources/               # Shared across all containers
-    └── validators/
-        └── json_validator.js
+└── data/                    # Shared across all containers
+    └── schemas/
+        ├── user_schema.json
+        └── response_schema.json
 ```
 
 **Mounting behavior**:
@@ -191,7 +189,8 @@ problem-package/
 ```
 Submission Container (accepts_submission: true):
 /
-├── tools/                            # System tools (from judgehost)
+├── tools/
+│   └── code_analyzer.sh
 ├── hooks/                            # Problem hooks (executed outside via docker exec)
 │   └── post/
 │       ├── 01_security_scan.sh       # From submission/hooks/
@@ -200,38 +199,34 @@ Submission Container (accepts_submission: true):
 │   └── schemas/                      # Shared from problem data/
 │       ├── user_schema.json
 │       └── response_schema.json
-├── resources/
-│   └── validators/                   # Shared from problem resources/
-│       └── json_validator.js
 ├── submission/                       # Read-only original
-│   └── [student API code]
+│   └── [submission API code]
 └── workspace/                        # Read-write working copy
-    └── [student API code]
+    └── [submission API code]
 
 API Tester Container (accepts_submission: false):
 /
-├── tools/                            # System tools (from judgehost)
+├── tools/
+│   └── api_client.sh
 ├── hooks/                            # Problem hooks (executed outside via docker exec)
 │   └── post/
 │       ├── 01_test_endpoints.sh      # From api-tester/hooks/
 │       └── 02_performance_test.sh
-├── data/
-│   ├── test_cases/                   # Container-specific from api-tester/data/
-│   │   └── api_tests.json
-│   └── schemas/                      # Shared from problem data/
-│       ├── user_schema.json
-│       └── response_schema.json
-└── resources/
-    └── validators/                   # Shared from problem resources/
-        └── json_validator.js
+└── data/
+    ├── test_cases/                   # Container-specific from api-tester/data/
+    │   └── api_tests.json
+    └── schemas/                      # Shared from problem data/
+        ├── user_schema.json
+        └── response_schema.json
 ```
 
 **Key differences:**
 
 - Submission container gets `/submission/` and `/workspace/` mounts
 - Tester container does NOT get submission code
-- Both get shared `data/` and `resources/`
-- Each gets its own container-specific `hooks/`
+- Both get shared `data/` from problem package
+- Both get problem-provided tools at `/tools/`
+- Each gets its own container-specific `hooks/` and `data/`
 
 ---
 
@@ -518,7 +513,7 @@ Final container waits for multiple:
 Containers with `accepts_submission: true` undergo a **two-stage build process**:
 
 1. **Stage 1: Build Problem Image** - Build the evaluation environment (done once per problem)
-2. **Stage 2: Load Submission** - Inject student code (done per submission)
+2. **Stage 2: Load Submission** - Inject submission code (done per submission)
 
 This separation provides:
 
@@ -551,9 +546,8 @@ RUN apk add --no-cache curl jq
 # Copy problem resources
 COPY hooks /hooks
 COPY data /data
-COPY resources /resources
 
-# Install evaluation tools (provided by judgehost)
+# Copy problem-specific tools (optional)
 COPY tools /tools
 
 # Set working directory
@@ -582,7 +576,7 @@ HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
 3. Copy submission code to `/workspace/` (read-write)
 4. Create `/out/` and `/tmp/` directories
 5. Run pre-hooks (if any)
-6. Start student application
+6. Start submission application
 7. Run post-hooks for evaluation
 8. Collect results
 
@@ -591,16 +585,15 @@ HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
 ```
 Container Filesystem:
 /
-├── tools/              # From problem image (Stage 1)
-├── hooks/              # From problem image (Stage 1)
-├── data/               # From problem image (Stage 1)
-├── resources/          # From problem image (Stage 1)
-├── submission/         # Mounted at runtime (Stage 2) - READ-ONLY
-│   └── [student code]
-├── workspace/          # Created at runtime (Stage 2) - READ-WRITE
-│   └── [copy of student code]
-├── out/                # Created at runtime (Stage 2) - READ-WRITE
-└── tmp/                # Created at runtime (Stage 2) - READ-WRITE
+├── tools/                  # Problem-specific tools (Stage 1)
+├── hooks/                  # From problem image (Stage 1)
+├── data/                   # From problem image (Stage 1)
+├── submission/             # Mounted at runtime (Stage 2) - READ-ONLY
+│   └── [submission code]
+├── workspace/              # Created at runtime (Stage 2) - READ-WRITE
+│   └── [copy of submission code]
+├── out/                    # Created at runtime (Stage 2) - READ-WRITE
+└── tmp/                    # Created at runtime (Stage 2) - READ-WRITE
 ```
 
 ### Why Two Stages?
@@ -742,10 +735,11 @@ Each container directory can have its own `config.json`:
 
 ### Default Behavior
 
-If `resource_mounts` is not specified, default behavior is:
+Default mounting behavior:
 
-1. **Single-container problems**: Mount from top-level `hooks/`, `data/`, `resources/`
-2. **Multi-container problems**: Look for `containers/<container_id>/hooks/`, fall back to top-level
+- Container-specific `hooks/` and `data/` are mounted from `<container-id>/hooks/` and `<container-id>/data/`
+- Shared `data/` is merged/overlaid from problem root `data/`
+- All mounts are read-only except `/workspace/`, `/out/`, and `/tmp/`
 
 ---
 
@@ -777,8 +771,8 @@ ACTUAL=$(curl -s http://localhost:3000/api/users)
 #!/bin/bash
 # hooks/post/02_validate_response.sh
 
-# Shared validator utility
-VALIDATOR="/resources/validators/response-validator.js"
+# Validator utility in shared data
+VALIDATOR="/data/validators/response-validator.js"
 
 # Run validator
 node "$VALIDATOR" --input /tmp/api-response.json --schema /data/schemas/user-schema.json
@@ -798,7 +792,8 @@ cat > "$OUTPUT_DIR/rubric_api_correctness.json" << EOF
   "rubric_id": "api_correctness",
   "rubric_type": "api_endpoints",
   "score": 38.0,
-  "status": "passed",
+  "max_score": 40.0,
+  "status": "DONE",
   "details": {
     "total": 25,
     "passed": 23,
@@ -829,11 +824,7 @@ COPY containers/submission/hooks /hooks
 # Copy shared data into image
 COPY data /data
 
-# Copy shared resources into image
-COPY resources /resources
-
-# Copy default tools (provided by judgehost)
-COPY tools /tools
+# Submission image does not provide problem-specific tools
 
 WORKDIR /workspace
 ```
@@ -896,7 +887,13 @@ Containers cannot access each other's filesystems directly:
    - One hook per rubric when possible
    - Use numeric prefixes for execution order: `01_`, `02_`, etc.
 
-2. **Data**: Structure test data logically
+2. **Tools**: Organize problem-specific tools
+
+   - Place in `tools/` directory within container folder
+   - System built-in tools are automatically available
+   - Can be called from hooks or used in entrypoint
+
+3. **Data**: Structure test data logically
 
    ```
    data/
@@ -904,16 +901,11 @@ Containers cannot access each other's filesystems directly:
    │   ├── basic/
    │   ├── edge-cases/
    │   └── stress-tests/
-   └── fixtures/
-       ├── seed-data.sql
-       └── sample-users.json
-   ```
-
-3. **Resources**: Group by purpose
-   ```
-   resources/
+   ├── fixtures/
+   │   ├── seed-data.sql
+   │   └── sample-users.json
+   ├── schemas/
    ├── validators/
-   ├── utils/
    └── configs/
    ```
 
@@ -959,16 +951,17 @@ Containers cannot access each other's filesystems directly:
 ```
 problem-package/
 ├── config.json
-├── Dockerfile
-├── hooks/
-│   └── post/
-│       └── 01_run_tests.sh
-└── data/
-    └── test-cases/
-        ├── input1.txt
-        ├── output1.txt
-        ├── input2.txt
-        └── output2.txt
+├── submission/
+│   ├── Dockerfile
+│   ├── hooks/
+│   │   └── post/
+│   │       └── 01_run_tests.sh
+│   └── data/
+│       └── test-cases/
+│           ├── input1.txt
+│           ├── output1.txt
+│           ├── input2.txt
+│           └── output2.txt
 ```
 
 Hook accessing test data:
@@ -1007,24 +1000,22 @@ EOF
 ```
 problem-package/
 ├── config.json
-├── containers/
-│   ├── submission/
-│   │   ├── Dockerfile
-│   │   └── hooks/
-│   │       └── post/
-│   │           └── 01_validate_schema.sh
-│   └── validator/
-│       ├── Dockerfile
-│       └── hooks/
-│           └── post/
-│               └── 01_test_queries.sh
-├── data/
-│   ├── schemas/
-│   │   └── expected-schema.json
-│   └── test-queries/
-│       ├── query1.sql
-│       └── expected1.json
-└── resources/
+├── submission/
+│   ├── Dockerfile
+│   └── hooks/
+│       └── post/
+│           └── 01_validate_schema.sh
+├── validator/
+│   ├── Dockerfile
+│   └── hooks/
+│       └── post/
+│           └── 01_test_queries.sh
+└── data/
+    ├── schemas/
+    │   └── expected-schema.json
+    ├── test-queries/
+    │   ├── query1.sql
+    │   └── expected1.json
     └── validators/
         └── schema-validator.py
 ```
@@ -1033,7 +1024,7 @@ Validator hook:
 
 ```bash
 #!/bin/bash
-# containers/validator/hooks/post/01_test_queries.sh
+# validator/hooks/post/01_test_queries.sh
 
 # Connect to submission database
 DB_HOST="submission"  # Container name

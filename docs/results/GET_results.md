@@ -68,7 +68,7 @@ Returns comprehensive evaluation results including:
         "score": 38.0,
         "max_score": 40.0,
         "percentage": 95.0,
-        "status": "PARTIAL",
+        "status": "DONE",
         "evaluated_by_container": "api_tester",
         "details": {
           "total": 25,
@@ -128,7 +128,7 @@ Returns comprehensive evaluation results including:
         "score": 16.5,
         "max_score": 20.0,
         "percentage": 82.5,
-        "status": "passed",
+        "status": "DONE",
         "evaluated_by_container": "api_tester",
         "details": {
           "total": 5,
@@ -167,7 +167,7 @@ Returns comprehensive evaluation results including:
         "score": 15.0,
         "max_score": 20.0,
         "percentage": 75.0,
-        "status": "passed",
+        "status": "DONE",
         "evaluated_by_container": "submission",
         "custom_type_name": "resource_monitoring",
         "details": {
@@ -319,7 +319,7 @@ See [`../data-models/rubrics/mapping.md`](../data-models/rubrics/mapping.md) for
 2. **Container-specific results**: Multi-container problems show which container evaluated each rubric
 3. **Results caching**: Results are cached after completion
 4. **Artifacts**: Generated files are stored temporarily and accessible via the artifacts endpoint
-5. **Partial results**: If a submission is cancelled, partial results may be available for completed rubrics
+5. **DONE results**: If a submission is cancelled, DONE results may be available for completed rubrics
 
 ---
 

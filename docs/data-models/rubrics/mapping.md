@@ -91,7 +91,7 @@ If `evaluated_by_container` is not specified:
 ┌─────────────────────┐         ┌─────────────────────┐
 │ Submission Container│◄────────┤   API Tester        │
 │                     │ HTTP    │                     │
-│ - Runs student API  │         │ - Tests endpoints   │
+│ - Run submission API│         │ - Tests endpoints   │
 │                     │         │ - Measures perf     │
 │ Evaluates:          │         │                     │
 │ • Security scan     │         │ Evaluates:          │
@@ -159,7 +159,7 @@ If `evaluated_by_container` is not specified:
 │ Submission Container│         │  Validator          │
 │                     │         │                     │
 │ - Postgres/MySQL    │         │ - Runs SQL queries  │
-│ - Student schema    │         │ - Checks results    │
+│ - submission schema │         │ - Checks results    │
 │                     │         │                     │
 │ Evaluates:          │         │ Evaluates:          │
 │ • Schema design     │         │ • Query correctness │

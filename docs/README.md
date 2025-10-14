@@ -53,46 +53,13 @@ Welcome to the Judgehost documentation. This directory contains comprehensive gu
 
 ---
 
-## Documentation Structure
-
-```
-docs/
-├── README.md                        # This file
-├── problems/                        # Problem management API
-│   ├── POST_problems.md
-│   ├── GET_problems.md
-│   └── DELETE_problems.md
-├── submissions/                     # Submission management API
-│   ├── POST_submissions.md
-│   ├── GET_submissions.md
-│   └── DELETE_submissions.md
-├── results/                         # Result retrieval API
-│   ├── GET_results.md
-│   └── GET_results_logs.md
-└── data-models/                     # Data structure specifications
-    ├── project_types.md            # Project types and rubrics
-    ├── rubric_types.md             # Rubric types and formats
-    ├── rubrics/
-    │   └── mapping.md              # Rubric-to-container mapping
-    ├── containers/
-    │   └── resources.md            # Problem resources mounting
-    ├── outputs/
-    │   ├── logs.md                 # Log format
-    │   └── metrics.md              # Metrics format
-    └── samples/
-        ├── problem_package_name.md     # Problem package structure
-        └── submission_package_name.md  # Submission package structure
-```
-
----
-
 ## Key Concepts
 
 ### Multi-Container Architecture
 
 Problems can define multiple containers for evaluation:
 
-- **Submission container**: Runs student code (accepts submissions)
+- **Submission container**: Runs submission code (accepts submissions)
 - **Tester containers**: Run evaluation tests and checks (do not accept submissions)
 - **Service containers**: Provide infrastructure like databases (do not accept submissions)
 
@@ -115,6 +82,18 @@ Different containers evaluate different rubrics:
 - **Tester container**: API tests, UI tests, integration tests
 
 See [Rubric Mapping](data-models/rubrics/mapping.md) for detailed strategies.
+
+### Rubric Evaluation Status
+
+Rubrics use specific status values to indicate evaluation progress:
+
+- `DONE` - Evaluation completed successfully (all test cases/scripts executed)
+- `SKIPPED` - Not evaluated (reserved for manual rubrics)
+- `ERROR` - Evaluation failed due to system error
+
+Note: The judgehost does not evaluate `manual` rubric types. These are automatically marked as `SKIPPED` and handled by DOMServer for instructor grading.
+
+See [Rubric Types](data-models/rubric_types.md) for details.
 
 ### Problem Resources
 
@@ -172,63 +151,3 @@ curl http://localhost:3000/api/results/{submission_id}
 ```
 
 See [GET /results](results/GET_results.md) for details.
-
----
-
-## Common Workflows
-
-### Creating a Multi-Container Problem
-
-1. Design container architecture (submission + tester + services)
-2. Define which containers evaluate which rubrics
-3. Configure container dependencies and health checks
-4. Create per-container Dockerfiles and hooks
-5. Configure resource mounting
-6. Test locally
-
-See:
-
-- [Rubric Mapping](data-models/rubrics/mapping.md)
-- [Problem Resources](data-models/containers/resources.md)
-- [Problem Package Structure](data-models/samples/problem_package_name.md)
-
-### Writing Evaluation Hooks
-
-1. Choose appropriate hook phase (pre, post, periodic)
-2. Understand hooks are executed outside containers via `docker exec`
-3. Access problem resources at `/data/` and `/resources/`
-4. Write rubric results to `/out/rubric_<id>.json`
-5. Log progress to stderr
-
-Note: Tools (not hooks) are executed inside containers via entrypoint.sh.
-
-See [Problem Resources](data-models/containers/resources.md) for details.
-
-### Analyzing Multi-Container Logs
-
-1. Retrieve logs: `GET /results/:id/logs`
-2. Filter by container: `?container_id=submission`
-3. Filter by source: `?source=hook`
-4. Parse structured JSON for analysis
-
-See [Log Format](data-models/outputs/logs.md) for details.
-
----
-
-## Contributing
-
-When adding new documentation:
-
-1. **API Endpoints**: Add to appropriate directory (`problems/`, `submissions/`, `results/`)
-2. **Data Models**: Add to `data-models/` with appropriate subdirectory
-3. **Update this README**: Add links to new documents
-
----
-
-## Support
-
-For questions or issues:
-
-- Check existing documentation first
-- Review examples in each document
-- Consult the main [README](../README.md)

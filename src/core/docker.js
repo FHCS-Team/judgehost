@@ -691,7 +691,7 @@ LABEL judgehost.built_at="${new Date().toISOString()}"
 }
 
 /**
- * Create submission container (runs student code)
+ * Create submission container (runs submission code)
  * @param {string} submissionImage - Submission image name
  * @param {string} submissionId - Submission identifier
  * @param {string} networkName - Network name to attach to
