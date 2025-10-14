@@ -16,17 +16,18 @@ fi
 echo "[PRE] Submission directory contents:"
 ls -la "$SUBMISSION_DIR"
 
-# Install dependencies if package.json exists
+# Check dependencies are installed
 if [ -f "$SUBMISSION_DIR/package.json" ]; then
-    echo "[PRE] Installing Node.js dependencies..."
-    cd "$SUBMISSION_DIR"
-    npm install --production --silent 2>&1 | tee "$OUT_DIR/npm-install.log" || {
-        echo "[PRE ERROR] npm install failed"
-        exit 1
-    }
-    echo "[PRE] Dependencies installed successfully"
+    echo "[PRE] Verifying Node.js dependencies..."
+    if [ -d "$SUBMISSION_DIR/node_modules" ]; then
+        echo "[PRE] Dependencies are installed"
+        echo "[PRE] Installed packages:"
+        ls "$SUBMISSION_DIR/node_modules/" | head -10
+    else
+        echo "[PRE WARNING] node_modules not found - dependencies may not be installed"
+    fi
 else
-    echo "[PRE WARNING] No package.json found in submission"
+    echo "[PRE] No package.json found in submission"
 fi
 
 echo "[PRE] Environment preparation complete"

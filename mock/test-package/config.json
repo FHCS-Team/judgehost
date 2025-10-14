@@ -3,6 +3,7 @@
   "problem_name": "Simple Node.js REST API",
   "description": "Create a RESTful API server with Express.js that manages a simple todo list with CRUD operations",
   "project_type": "api",
+  "network_enabled": true,
   "resource_limits": {
     "memory": "512m",
     "cpus": 2,

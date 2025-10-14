@@ -3,13 +3,68 @@
  */
 
 /**
+ * Build step configuration for parameterized container builds
+ * @typedef {Object} BuildStep
+ * @property {string} type - Step type: 'run', 'copy', 'env', 'workdir', 'expose', 'arg', 'healthcheck', 'shell', etc.
+ * @property {string} [command] - Shell command for 'run' type
+ * @property {string} [source] - Source path for 'copy' type
+ * @property {string} [destination] - Destination path for 'copy' type
+ * @property {Object} [env] - Environment variables for 'env' type
+ * @property {string} [path] - Working directory for 'workdir' type
+ * @property {number|Array<number>} [ports] - Port(s) to expose for 'expose' type
+ * @property {Object} [args] - Build arguments for 'arg' type
+ * @property {Object} [health] - Health check configuration for 'healthcheck' type
+ * @property {Array<string>} [shell_form] - Shell form for 'shell' type
+ */
+
+/**
+ * Container configuration for problems
+ * @typedef {Object} ContainerConfig
+ * @property {string} container_id - Unique identifier for this container
+ * @property {string} container_name - Human-readable name
+ * @property {string} [base_image] - Base Docker image (e.g., 'node:18-alpine')
+ * @property {string} [role] - Container role: 'submission', 'tester', 'database', 'cache', 'service'
+ * @property {Array<BuildStep>} [build_steps] - Parameterized build steps
+ * @property {Object} [environment] - Environment variables
+ * @property {Object} [resource_limits] - Container-specific resource limits
+ * @property {string} [resource_limits.memory] - Memory limit (e.g., '512m')
+ * @property {number} [resource_limits.cpus] - CPU count
+ * @property {number} [resource_limits.timeout] - Execution timeout in seconds
+ * @property {Array<string>} [ports] - Exposed ports
+ * @property {Array<string>} [volumes] - Volume mounts
+ * @property {string} [network_mode] - Network mode: 'internal', 'bridge', 'none'
+ * @property {Array<string>} [depends_on] - Container dependencies
+ * @property {string} [command] - Override container command
+ * @property {string} [entrypoint] - Override container entrypoint
+ * @property {boolean} [accepts_submission] - Whether this container accepts submission code
+ * @property {string} [submission_package_id] - ID of submission package to mount
+ * @property {Object} [health_check] - Health check configuration
+ * @property {string} [health_check.command] - Health check command
+ * @property {number} [health_check.interval] - Check interval in seconds
+ * @property {number} [health_check.timeout] - Check timeout in seconds
+ * @property {number} [health_check.retries] - Number of retries
+ */
+
+/**
+ * Submission package mapping
+ * @typedef {Object} SubmissionPackageMapping
+ * @property {string} package_id - Unique identifier for submission package
+ * @property {string} package_name - Human-readable name (e.g., 'frontend', 'backend')
+ * @property {string} target_container_id - Container ID that accepts this package
+ * @property {string} [mount_path] - Path where submission should be mounted
+ * @property {boolean} [required] - Whether this package is required
+ */
+
+/**
  * Problem configuration from config.json
  * @typedef {Object} ProblemConfig
  * @property {string} problem_id - Unique identifier for the problem
  * @property {string} problem_name - Human-readable name
  * @property {string} [description] - Problem description
- * @property {string} project_type - Type of project (e.g., 'web', 'cli', 'api')
- * @property {Object} [resource_limits] - Container resource limits
+ * @property {string} project_type - Type of project (e.g., 'web', 'cli', 'api', 'full-stack')
+ * @property {Array<ContainerConfig>} containers - Container configurations (required)
+ * @property {Array<SubmissionPackageMapping>} [submission_packages] - Submission package mappings
+ * @property {Object} [resource_limits] - Default resource limits
  * @property {string} [resource_limits.memory] - Memory limit (e.g., '4g')
  * @property {number} [resource_limits.cpus] - CPU count
  * @property {number} [resource_limits.timeout] - Execution timeout in seconds

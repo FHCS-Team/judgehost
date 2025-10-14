@@ -4,6 +4,9 @@
 
 set -e
 
+# Ensure PATH includes standard utilities
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 HOOK_DIR="$1"
 MODE="$2" # if 'periodic', handle timer
 

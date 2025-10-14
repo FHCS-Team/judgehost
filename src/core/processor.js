@@ -68,6 +68,7 @@ class Processor extends EventEmitter {
 
   /**
    * Process a submission through the entire evaluation workflow
+   * Multi-container is now the only supported architecture
    */
   async processSubmission(job) {
     const evaluationState = {
@@ -87,76 +88,163 @@ class Processor extends EventEmitter {
       logger.info(`Loading problem ${job.problemId}`);
       const problem = await this.loadProblem(job.problemId);
 
-      // Step 2: Download and prepare submission
-      logger.info(`Downloading submission ${job.submissionId}`);
-      this.updateState(evaluationState, EvaluationState.DOWNLOADING);
-      const submissionPath = await this.downloadSubmission(job);
+      // Validate problem has containers configuration
+      if (!problem.containers || !Array.isArray(problem.containers)) {
+        throw new Error(
+          `Problem ${job.problemId} missing required 'containers' field. Multi-container architecture is required.`
+        );
+      }
 
-      // Step 3: Build evaluation image
-      logger.info(`Building evaluation image for ${job.submissionId}`);
-      this.updateState(evaluationState, EvaluationState.BUILDING);
-      const problemImage = `judgehost-problem-${job.problemId}:latest`;
-      const evalImage = await docker.buildEvaluationImage(
-        problemImage,
-        job.submissionId,
-        submissionPath
+      // Use multi-container evaluation (the only supported workflow)
+      logger.info(
+        `Processing multi-container evaluation for ${job.submissionId}`
       );
-      evaluationState.imageId = evalImage;
+      return await this.processMultiContainerEvaluation(
+        job,
+        problem,
+        evaluationState
+      );
+    } catch (error) {
+      logger.error(`Error processing submission ${job.submissionId}:`, error);
 
-      // Step 4: Prepare results directory
+      // Cleanup on failure
+      if (evaluationState.containerId) {
+        await docker
+          .cleanup(evaluationState.containerId, false)
+          .catch(() => {});
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Process submission using multi-container architecture
+   * Supports multiple submission packages and multiple containers
+   */
+  async processMultiContainerEvaluation(job, problem, evaluationState) {
+    let containerGroup = null;
+
+    try {
+      // Step 1: Validate problem configuration
+      if (!problem.containers || problem.containers.length === 0) {
+        throw new Error(
+          "Multi-container problem must define at least one container"
+        );
+      }
+
+      if (
+        !problem.submission_packages ||
+        problem.submission_packages.length === 0
+      ) {
+        throw new Error(
+          "Multi-container problem must define submission package mappings"
+        );
+      }
+
+      // Step 2: Download and extract all submission packages
+      logger.info(
+        `[MultiContainer] Downloading ${
+          job.packages?.length || 1
+        } submission package(s) for ${job.submissionId}`
+      );
+      this.updateState(evaluationState, EvaluationState.DOWNLOADING);
+
+      const submissionPackages = await this.downloadMultiPackageSubmission(
+        job,
+        problem
+      );
+
+      // Step 3: Prepare results directory
       const resultsDir = path.join(config.paths.resultsDir, job.submissionId);
       await fs.mkdir(resultsDir, { recursive: true });
       await fs.mkdir(path.join(resultsDir, "logs"), { recursive: true });
 
-      // Step 5: Create container
-      logger.info(`Creating evaluation container for ${job.submissionId}`);
-      this.updateState(evaluationState, EvaluationState.STARTING);
-      const containerId = await docker.createEvaluationContainer(
-        evalImage,
+      // Step 4: Create container group (network + all containers)
+      logger.info(
+        `[MultiContainer] Creating container group for ${job.submissionId}`
+      );
+      this.updateState(evaluationState, EvaluationState.BUILDING);
+
+      containerGroup = await docker.createContainerGroup(
         job.submissionId,
         problem,
-        {
-          memoryMB: job.timeoutOverride || problem.memoryMB,
-        }
+        submissionPackages,
+        resultsDir
       );
-      evaluationState.containerId = containerId;
 
-      // Step 6: Execute container (runs entrypoint which executes hooks)
-      logger.info(`Executing evaluation for ${job.submissionId}`);
-      this.updateState(evaluationState, EvaluationState.RUNNING_PRE_HOOKS);
+      evaluationState.containerGroup = containerGroup;
+
+      // Step 5: Start all containers in dependency order
+      logger.info(
+        `[MultiContainer] Starting ${containerGroup.containers.length} containers`
+      );
+      this.updateState(evaluationState, EvaluationState.STARTING);
+
+      await docker.startContainerGroup(containerGroup);
+
+      // Step 6: Wait for containers to complete
+      logger.info(
+        `[MultiContainer] Waiting for container execution to complete`
+      );
+      this.updateState(evaluationState, EvaluationState.RUNNING_POST_HOOKS);
 
       const timeoutMs =
         (job.timeoutOverride ||
-          problem.timeoutSeconds ||
+          problem.resource_limits?.timeout ||
           config.docker.defaultTimeout / 1000) * 1000;
-      const executionResult = await docker.executeContainer(containerId, {
-        timeout: timeoutMs,
-      });
 
-      // Step 7: Extract results from container before cleanup
-      logger.info(`Extracting results from container for ${job.submissionId}`);
-      await this.extractContainerResults(containerId, resultsDir);
-
-      // Step 8: Collect results
-      logger.info(`Collecting results for ${job.submissionId}`);
-      this.updateState(evaluationState, EvaluationState.COLLECTING_RESULTS);
-      const results = await this.collectResults(
-        job,
-        problem,
-        resultsDir,
-        executionResult
+      const executionResults = await docker.waitForContainerGroup(
+        containerGroup,
+        timeoutMs
       );
 
-      // Step 9: Cleanup container
+      // Step 7: Collect logs from all containers
+      logger.info(`[MultiContainer] Collecting logs from all containers`);
+      const containerLogs = await docker.getContainerGroupLogs(containerGroup);
+
+      // Save individual container logs
+      for (const [containerId, logs] of Object.entries(containerLogs)) {
+        const logPath = path.join(resultsDir, "logs", `${containerId}.log`);
+        await fs.writeFile(logPath, logs);
+      }
+
+      // Create combined log file
+      const combinedLogs = Object.entries(containerLogs)
+        .map(
+          ([containerId, logs]) =>
+            `\n=== Container: ${containerId} ===\n${logs}`
+        )
+        .join("\n");
+
+      await fs.writeFile(
+        path.join(resultsDir, "logs", "combined.log"),
+        combinedLogs
+      );
+
+      // Step 8: Collect results
+      logger.info(
+        `[MultiContainer] Collecting results for ${job.submissionId}`
+      );
+      this.updateState(evaluationState, EvaluationState.COLLECTING_RESULTS);
+
+      const results = await this.collectResults(job, problem, resultsDir, {
+        executionResults,
+        containerLogs,
+        containerGroup,
+      });
+
+      // Step 9: Cleanup containers and network
+      logger.info(`[MultiContainer] Cleaning up container group`);
       if (config.docker.cleanupContainersAfterEval) {
-        await docker.cleanup(containerId, false);
+        await docker.cleanupContainerGroup(job.submissionId);
       }
 
       // Step 10: Mark job as completed
       this.updateState(evaluationState, EvaluationState.COMPLETED);
       completeJob(job.id, results);
 
-      logger.info(`Job ${job.id} completed successfully`);
+      logger.info(`[MultiContainer] Job ${job.id} completed successfully`);
 
       // Send notification if configured
       if (job.notificationUrl) {
@@ -169,14 +257,17 @@ class Processor extends EventEmitter {
           }
         );
       }
+
+      return results;
     } catch (error) {
-      logger.error(`Error processing submission ${job.submissionId}:`, error);
+      logger.error(
+        `[MultiContainer] Error processing submission ${job.submissionId}:`,
+        error
+      );
 
       // Cleanup on failure
-      if (evaluationState.containerId) {
-        await docker
-          .cleanup(evaluationState.containerId, false)
-          .catch(() => {});
+      if (containerGroup) {
+        await docker.cleanupContainerGroup(job.submissionId).catch(() => {});
       }
 
       throw error;
@@ -216,32 +307,136 @@ class Processor extends EventEmitter {
   }
 
   /**
-   * Download submission based on package type
+   * Download multiple submission packages for multi-container problems
+   * @param {Object} job - Job information
+   * @param {Object} problem - Problem configuration
+   * @returns {Promise<Object>} Map of packageId -> extracted path
    */
-  async downloadSubmission(job) {
-    const submissionDir = path.join(
-      config.paths.submissionsDir,
-      job.submissionId
-    );
-    await fs.mkdir(submissionDir, { recursive: true });
+  async downloadMultiPackageSubmission(job, problem) {
+    const submissionPackages = {};
 
-    try {
-      switch (job.packageType) {
-        case "git":
-          return await this.downloadGitSubmission(job, submissionDir);
+    // If job has multiple packages, use them
+    if (job.packages && Array.isArray(job.packages)) {
+      for (const packageSource of job.packages) {
+        const packageId = packageSource.package_id;
 
-        case "url":
-          return await this.downloadUrlSubmission(job, submissionDir);
+        logger.info(`Downloading package ${packageId} for ${job.submissionId}`);
 
-        case "file":
-          // File should already be uploaded to submissions directory
-          return submissionDir;
+        const packageDir = path.join(
+          config.paths.submissionsDir,
+          job.submissionId,
+          packageId
+        );
+        await fs.mkdir(packageDir, { recursive: true });
 
-        default:
-          throw new Error(`Unknown package type: ${job.packageType}`);
+        // Download based on source type
+        const extractedPath = await this.downloadPackageSource(
+          packageSource,
+          packageDir
+        );
+
+        submissionPackages[packageId] = extractedPath;
       }
-    } catch (error) {
-      throw new Error(`Failed to download submission: ${error.message}`);
+    } else {
+      // Backward compatibility: single package submission
+      // Map it to the first required submission package
+      const requiredPackages = problem.submission_packages.filter(
+        (p) => p.required !== false
+      );
+
+      if (requiredPackages.length === 0) {
+        throw new Error(
+          "Problem requires no submission packages, but submission was provided"
+        );
+      }
+
+      const defaultPackageId = requiredPackages[0].package_id;
+      logger.info(`Single package submission, mapping to ${defaultPackageId}`);
+
+      const packageDir = path.join(
+        config.paths.submissionsDir,
+        job.submissionId,
+        defaultPackageId
+      );
+      await fs.mkdir(packageDir, { recursive: true });
+
+      const extractedPath = await this.downloadPackageSource(
+        {
+          package_source: job.packageSource || job.packageType,
+          package_url: job.packageUrl,
+          git_url: job.gitUrl,
+          git_branch: job.gitBranch,
+          git_commit: job.gitCommit,
+          local_path: job.localPath,
+        },
+        packageDir
+      );
+
+      submissionPackages[defaultPackageId] = extractedPath;
+    }
+
+    // Validate all required packages are present
+    for (const packageMapping of problem.submission_packages) {
+      if (
+        packageMapping.required !== false &&
+        !submissionPackages[packageMapping.package_id]
+      ) {
+        throw new Error(
+          `Required submission package missing: ${packageMapping.package_id}`
+        );
+      }
+    }
+
+    return submissionPackages;
+  }
+
+  /**
+   * Download a package from various sources
+   * @param {Object} packageSource - Package source configuration
+   * @param {string} targetDir - Target directory for extraction
+   * @returns {Promise<string>} Path to extracted content
+   */
+  async downloadPackageSource(packageSource, targetDir) {
+    const sourceType = packageSource.package_source;
+
+    switch (sourceType) {
+      case "git":
+        if (!packageSource.git_url) {
+          throw new Error("Git URL not provided for package");
+        }
+        return await this.downloadGitSubmission(
+          {
+            gitUrl: packageSource.git_url,
+            gitBranch: packageSource.git_branch,
+            gitCommit: packageSource.git_commit,
+          },
+          targetDir
+        );
+
+      case "url":
+        if (!packageSource.package_url) {
+          throw new Error("URL not provided for package");
+        }
+        return await this.downloadUrlSubmission(
+          {
+            packageUrl: packageSource.package_url,
+            checksum: packageSource.checksum,
+          },
+          targetDir
+        );
+
+      case "file":
+        // File should already be uploaded to target directory
+        if (packageSource.local_path) {
+          // If local_path is specified, copy from there
+          await fs.cp(packageSource.local_path, targetDir, {
+            recursive: true,
+          });
+        }
+        return targetDir;
+
+      default:
+        throw new Error(`Unknown package source type: ${sourceType}`);
     }
   }
 

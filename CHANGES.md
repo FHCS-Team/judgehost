@@ -1,3 +1,37 @@
+## Multi-Container Problem Support (Latest)
+
+### Major Features Added
+
+#### 1. Multi-Container Architecture
+
+- Support for problems with multiple interconnected containers
+- Define frontend, backend, database, cache, and test containers
+- Automatic dependency ordering and health checks
+- Network isolation between submissions
+
+#### 2. Multiple Submission Packages
+
+- Accept and process multiple code packages in a single submission
+- Map each package to its target container
+- New API endpoint: `POST /api/submissions/multi`
+
+#### 3. Parameterized Container Builds
+
+- New `containerBuilder` module replaces hard-coded build logic (npm install)
+- Configurable build steps (run, copy, env, workdir, expose, etc.)
+- Support for multiple languages and frameworks
+- Common build patterns provided
+
+#### 4. Container Orchestration
+
+- Container group creation and management
+- Topological sorting based on dependencies
+- Per-container resource limits and health monitoring
+
+See `docs/[GUIDE] MULTI_CONTAINER_SUPPORT.md` for complete documentation.
+
+---
+
 ## API Changes for Custom Judgehost Implementation
 
 This document outlines the changes required to adapt the original DOMjudge judgehost API for our custom container-based evaluation system.

@@ -26,11 +26,18 @@ PROBLEM_DIR="${PROBLEM_DIR:-$WORKSPACE_DIR/problem}"
 SUBMISSION_DIR="${SUBMISSION_DIR:-$WORKSPACE_DIR/submission}"
 OUT_DIR="${OUT_DIR:-$WORKSPACE_DIR/out}"
 TOOLS_DIR="${TOOLS_DIR:-$WORKSPACE_DIR/tools}"
+UTILS_DIR="${UTILS_DIR:-/utils}"
+HOOKS_DIR="${HOOKS_DIR:-/hooks}"
 
-# Hook directories in problem package
-PRE_HOOKS="$PROBLEM_DIR/hooks/pre"
-POST_HOOKS="$PROBLEM_DIR/hooks/post"
-PERIODIC_HOOKS="$PROBLEM_DIR/hooks/periodic"
+# Default hook directories (from docker/ - loaded first, can be overridden)
+DEFAULT_PRE_HOOKS="$UTILS_DIR/hooks/pre"
+DEFAULT_POST_HOOKS="$UTILS_DIR/hooks/post"
+DEFAULT_PERIODIC_HOOKS="$UTILS_DIR/hooks/periodic"
+
+# Problem-specific hook directories (from problem package - override defaults)
+PROBLEM_PRE_HOOKS="$HOOKS_DIR/pre"
+PROBLEM_POST_HOOKS="$HOOKS_DIR/post"
+PROBLEM_PERIODIC_HOOKS="$HOOKS_DIR/periodic"
 
 # Temporary directories for runtime data
 TMP_DIR="/tmp/judgehost"
@@ -50,6 +57,9 @@ export OUT_DIR
 export LOGS_DIR
 export CACHE_DIR
 export STATUS_DIR
+
+# Ensure PATH is set properly for all child processes
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 
 # ============================================================================
 # Utility Functions
@@ -76,7 +86,7 @@ get_status() {
 # Hook Execution
 # ============================================================================
 
-SCRIPT_RUNNER="$TOOLS_DIR/script_runner.sh"
+SCRIPT_RUNNER="$UTILS_DIR/tools/script_runner.sh"
 
 # Make all scripts executable (helps with mounted volumes)
 ensure_executable() {
@@ -87,6 +97,8 @@ ensure_executable() {
 }
 
 ensure_executable "$TOOLS_DIR"
+ensure_executable "$UTILS_DIR/hooks"
+ensure_executable "$HOOKS_DIR"
 ensure_executable "$PROBLEM_DIR/hooks"
 
 # Ensure script runner is executable
@@ -136,15 +148,31 @@ main() {
     set_status "current_stage" "initializing"
     
     # Stage 1: Run pre-deployment hooks
-    if [ -d "$PRE_HOOKS" ]; then
-        run_hooks "$PRE_HOOKS" "pre"
+    # Run default hooks first (from docker/), then problem-specific hooks (can override)
+    if [ -d "$DEFAULT_PRE_HOOKS" ]; then
+        log "Running default pre-hooks from $DEFAULT_PRE_HOOKS"
+        run_hooks "$DEFAULT_PRE_HOOKS" "pre-default"
+    fi
+    if [ -d "$PROBLEM_PRE_HOOKS" ]; then
+        log "Running problem-specific pre-hooks from $PROBLEM_PRE_HOOKS"
+        run_hooks "$PROBLEM_PRE_HOOKS" "pre-problem"
     fi
     
     # Stage 2: Start periodic monitoring in background
-    if [ -d "$PERIODIC_HOOKS" ]; then
-        log "Starting periodic hooks..."
+    # Problem-specific periodic hooks take priority
+    PERIODIC_DIR=""
+    if [ -d "$PROBLEM_PERIODIC_HOOKS" ]; then
+        PERIODIC_DIR="$PROBLEM_PERIODIC_HOOKS"
+        log "Using problem-specific periodic hooks"
+    elif [ -d "$DEFAULT_PERIODIC_HOOKS" ]; then
+        PERIODIC_DIR="$DEFAULT_PERIODIC_HOOKS"
+        log "Using default periodic hooks"
+    fi
+    
+    if [ -n "$PERIODIC_DIR" ]; then
+        log "Starting periodic hooks from $PERIODIC_DIR..."
         if [ -f "$SCRIPT_RUNNER" ]; then
-            "$SCRIPT_RUNNER" "$PERIODIC_HOOKS" periodic &
+            "$SCRIPT_RUNNER" "$PERIODIC_DIR" periodic &
             PERIODIC_PID=$!
             log "Periodic hooks started (PID: $PERIODIC_PID)"
         fi
@@ -155,28 +183,74 @@ main() {
         log "Starting submission: $*"
         set_status "current_stage" "running_submission"
         
-        # Run submission and capture exit code
-        set +e
-        "$@" 2>&1 | tee -a "$LOGS_DIR/submission.log"
-        EXIT_CODE=$?
-        set -e
+        # Change to submission directory if it exists
+        if [ -d "$SUBMISSION_DIR" ]; then
+            cd "$SUBMISSION_DIR"
+        fi
         
-        log "Submission exited with code: $EXIT_CODE"
-        set_status "submission_exit_code" "$EXIT_CODE"
-        
-        # Give submission time to finish cleanup
-        sleep 2
+        # For API/server projects, run in background so post-hooks can test it
+        if [ "$PROBLEM_TYPE" = "api" ] || [ "$PROBLEM_TYPE" = "server" ]; then
+            log "Running API/server submission in background..."
+            set +e
+            "$@" > "$LOGS_DIR/submission.log" 2>&1 &
+            SUBMISSION_PID=$!
+            set -e
+            log "Submission started with PID: $SUBMISSION_PID"
+            set_status "submission_pid" "$SUBMISSION_PID"
+            
+            # Give server time to start
+            sleep 3
+            
+            # Check if process is still running
+            if kill -0 "$SUBMISSION_PID" 2>/dev/null; then
+                log "Submission server is running"
+                set_status "submission_status" "running"
+            else
+                wait "$SUBMISSION_PID"
+                EXIT_CODE=$?
+                log "Submission server failed to start (exit code: $EXIT_CODE)"
+                set_status "submission_exit_code" "$EXIT_CODE"
+                set_status "submission_status" "failed"
+            fi
+        else
+            # For non-API projects, run normally and wait for completion
+            set +e
+            "$@" 2>&1 | tee -a "$LOGS_DIR/submission.log"
+            EXIT_CODE=$?
+            set -e
+            
+            log "Submission exited with code: $EXIT_CODE"
+            set_status "submission_exit_code" "$EXIT_CODE"
+            
+            # Give submission time to finish cleanup
+            sleep 2
+        fi
     else
         log "No submission command provided, running hooks only"
         EXIT_CODE=0
     fi
     
     # Stage 4: Run post-deployment hooks (evaluation)
-    if [ -d "$POST_HOOKS" ]; then
-        run_hooks "$POST_HOOKS" "post"
+    # Run default hooks first (from docker/), then problem-specific hooks (can override)
+    if [ -d "$DEFAULT_POST_HOOKS" ]; then
+        log "Running default post-hooks from $DEFAULT_POST_HOOKS"
+        run_hooks "$DEFAULT_POST_HOOKS" "post-default"
+    fi
+    if [ -d "$PROBLEM_POST_HOOKS" ]; then
+        log "Running problem-specific post-hooks from $PROBLEM_POST_HOOKS"
+        run_hooks "$PROBLEM_POST_HOOKS" "post-problem"
     fi
     
-    # Stage 5: Stop periodic hooks
+    # Stage 5: Stop background processes
+    # Stop submission server if it was started in background
+    if [ -n "${SUBMISSION_PID:-}" ]; then
+        log "Stopping submission server (PID: $SUBMISSION_PID)..."
+        kill "$SUBMISSION_PID" 2>/dev/null || true
+        wait "$SUBMISSION_PID" 2>/dev/null || true
+        log "Submission server stopped"
+    fi
+    
+    # Stop periodic hooks
     if [ -n "${PERIODIC_PID:-}" ]; then
         log "Stopping periodic hooks..."
         kill "$PERIODIC_PID" 2>/dev/null || true
