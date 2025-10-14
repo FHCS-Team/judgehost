@@ -1,0 +1,111 @@
+{
+  "problem_id": "sql-optimization",
+  "problem_name": "Database Query Optimization Challenge",
+  "description": "Optimize slow SQL queries on a 1M+ row dataset using schema changes, indexes, and query rewriting",
+  "project_type": "database",
+  "timeout": 1800,
+  "network": {
+    "name": "sql-optimization-{{submission_id}}",
+    "internet_access": false
+  },
+  "submission_packages": [
+    {
+      "package_id": "main",
+      "target_container": "submission",
+      "required": true
+    }
+  ],
+  "containers": [
+    {
+      "container_id": "database",
+      "accepts_submission": false,
+      "image_name": "judgehost-sql-optimization-database:latest",
+      "dockerfile_path": "./database/Dockerfile",
+      "stages": [
+        {
+          "stage_id": "stage1_setup",
+          "name": "Setup Database",
+          "working_directory": "/workspace",
+          "timeout": 120,
+          "network_enabled": false,
+          "resource_limits": {
+            "memory_limit": "2g",
+            "cpu_limit": "2.0"
+          }
+        },
+        {
+          "stage_id": "stage2_run",
+          "name": "Run Database",
+          "working_directory": "/workspace",
+          "timeout": 1200,
+          "network_enabled": true,
+          "resource_limits": {
+            "memory_limit": "2g",
+            "cpu_limit": "2.0"
+          }
+        }
+      ]
+    },
+    {
+      "container_id": "submission",
+      "accepts_submission": true,
+      "submission_package_id": "main",
+      "image_name": "judgehost-sql-optimization-submission:latest",
+      "dockerfile_path": "./submission/Dockerfile",
+      "stages": [
+        {
+          "stage_id": "stage1_setup",
+          "name": "Setup Tools",
+          "working_directory": "/workspace",
+          "timeout": 120,
+          "network_enabled": false,
+          "resource_limits": {
+            "memory_limit": "1g",
+            "cpu_limit": "1.0"
+          }
+        },
+        {
+          "stage_id": "stage2_run",
+          "name": "Run Queries",
+          "working_directory": "/workspace",
+          "timeout": 600,
+          "network_enabled": true,
+          "resource_limits": {
+            "memory_limit": "1g",
+            "cpu_limit": "1.0"
+          }
+        }
+      ]
+    }
+  ],
+  "rubrics": [
+    {
+      "rubric_id": "correctness",
+      "name": "Query Result Correctness",
+      "type": "test_cases",
+      "max_score": 50,
+      "container": "submission"
+    },
+    {
+      "rubric_id": "query_latency",
+      "name": "Query Latency Performance",
+      "type": "performance_benchmark",
+      "max_score": 30,
+      "container": "submission"
+    },
+    {
+      "rubric_id": "concurrency",
+      "name": "Concurrent Load Performance",
+      "type": "performance_benchmark",
+      "max_score": 10,
+      "container": "submission"
+    },
+    {
+      "rubric_id": "resource_efficiency",
+      "name": "Storage Efficiency",
+      "type": "resource_usage",
+      "max_score": 10,
+      "container": "submission"
+    }
+  ]
+}

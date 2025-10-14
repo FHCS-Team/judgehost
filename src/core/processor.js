@@ -142,12 +142,6 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       throw new Error(`Problem package must contain config.json at root level`);
     }
 
-    try {
-      await fs.access(dockerfilePath);
-    } catch (error) {
-      throw new Error(`Problem package must contain Dockerfile at root level`);
-    }
-
     // Load and validate config
     const configContent = await fs.readFile(configPath, "utf8");
     const problemConfig = JSON.parse(configContent);
@@ -169,16 +163,53 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       );
     }
 
-    // Build Docker image for the problem
-    const imageName = `problem-${problemId}:latest`;
-    logger.info(`Building Docker image for problem ${problemId}: ${imageName}`);
+    // Validate that all container Dockerfiles exist
+    for (const container of problemConfig.containers) {
+      if (!container.dockerfile_path) {
+        throw new Error(
+          `Container ${container.container_id} must specify dockerfile_path`
+        );
+      }
+      const containerDockerfilePath = path.join(
+        problemDir,
+        container.dockerfile_path
+      );
+      try {
+        await fs.access(containerDockerfilePath);
+      } catch (error) {
+        throw new Error(
+          `Dockerfile not found for container ${container.container_id} at ${container.dockerfile_path}`
+        );
+      }
+    }
 
-    try {
-      await buildImage(problemDir, imageName, {
-        buildTimeout: buildTimeout || config.docker.buildTimeout,
-      });
-    } catch (error) {
-      throw new Error(`Docker build failed: ${error.message}`);
+    // Build Docker images for all containers
+    const imageNames = {};
+    for (const container of problemConfig.containers) {
+      const containerId = container.container_id;
+      const imageName =
+        container.image_name || `judgehost-${problemId}-${containerId}:latest`;
+      const dockerfilePath = container.dockerfile_path;
+
+      logger.info(
+        `Building Docker image for container ${containerId}: ${imageName}`
+      );
+
+      // Get the directory containing the Dockerfile
+      const dockerfileDir = path.join(problemDir, path.dirname(dockerfilePath));
+      const dockerfileName = path.basename(dockerfilePath);
+
+      try {
+        await buildImage(dockerfileDir, imageName, {
+          buildTimeout: buildTimeout || config.docker.buildTimeout,
+          dockerfile: dockerfileName,
+        });
+        imageNames[containerId] = imageName;
+      } catch (error) {
+        throw new Error(
+          `Docker build failed for container ${containerId}: ${error.message}`
+        );
+      }
     }
 
     // Register problem
@@ -188,7 +219,7 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
       projectType: projectType || problemConfig.project_type || "generic",
       config: problemConfig,
       packagePath: problemDir,
-      imageName: imageName,
+      imageNames: imageNames,
       registeredAt: new Date(),
     };
 
@@ -196,12 +227,12 @@ async function processProblemPackage(problemId, packagePath, options = {}) {
 
     logger.info(`Problem ${problemId} registered successfully`, {
       problemId,
-      imageName,
+      imageNames,
     });
 
     return {
       problemId: problemData.problemId,
-      imageName: problemData.imageName,
+      imageNames: problemData.imageNames,
       registeredAt: problemData.registeredAt,
     };
   } catch (error) {
