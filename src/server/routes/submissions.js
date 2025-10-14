@@ -330,8 +330,8 @@ router.post("/multi", multiUpload.any(), async (req, res) => {
       });
     }
 
-    // Validate that problem supports multi-container
-    if (problemInfo.container_type !== "multi-container") {
+    // Validate that problem has containers configuration
+    if (!problemInfo.containers || !Array.isArray(problemInfo.containers)) {
       // Cleanup uploaded files
       if (req.files) {
         for (const file of req.files) {
@@ -341,11 +341,11 @@ router.post("/multi", multiUpload.any(), async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        error: "invalid_problem_type",
-        message: "Problem does not support multi-container submissions",
+        error: "invalid_problem_configuration",
+        message: "Problem does not have valid multi-container configuration",
         details: {
           problem_id,
-          container_type: problemInfo.container_type || "single-container",
+          hint: "Problem must define 'containers' array in config.json",
         },
       });
     }

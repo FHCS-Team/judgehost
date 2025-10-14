@@ -1,20 +1,16 @@
-# API: Submission Management
+# POST /submissions
 
-This document describes the API endpoints for managing submissions in the judgehost system.
+Submits a solution for evaluation against a registered problem.
 
 **Related Documentation**:
 
-- [`[SPEC] QUEUE_SYSTEM.md`](%5BSPEC%5D%20QUEUE_SYSTEM.md) - Queue behavior and prioritization
-- [`[SPEC] PROJECT_TYPES.md`](%5BSPEC%5D%20PROJECT_TYPES.md) - Project type definitions
-- [`[API] RESULT.md`](%5BAPI%5D%20RESULT.md) - Result retrieval
+- [`../problems/POST_problems.md`](../problems/POST_problems.md) - Problem registration
+- [`../results/GET_results.md`](../results/GET_results.md) - Retrieve results
+- [`../data-models/samples/submission_package_name.md`](../data-models/samples/submission_package_name.md) - Submission package structure
 
 ---
 
-## POST /submissions
-
-Submits a new solution for evaluation against a specific problem.
-
-### Description
+## Description
 
 This endpoint accepts a submission containing solution code to be evaluated. The submission can be provided via:
 
@@ -29,13 +25,13 @@ The judgehost will:
 3. Build an evaluation environment
 4. Run the problem's evaluation hooks to assess the solution
 
-### Request
+## Request
 
 **Endpoint:** `POST /submissions`
 
 **Content-Type:** `multipart/form-data`
 
-#### Form Fields
+### Form Fields
 
 | Field                 | Type        | Required    | Description                                                   |
 | --------------------- | ----------- | ----------- | ------------------------------------------------------------- |
@@ -59,9 +55,9 @@ The judgehost will:
 - **`package_type="url"`**: Provide `package_url` pointing to a downloadable archive
 - **`package_type="git"`**: Provide `git_url` (public repositories only)
 
-### Request Examples
+## Request Examples
 
-#### Example 1: File Upload
+### Example 1: File Upload
 
 ```bash
 curl -X POST http://localhost:3000/api/submissions \
@@ -72,7 +68,7 @@ curl -X POST http://localhost:3000/api/submissions \
   -F "priority=7"
 ```
 
-#### Example 2: Git Repository
+### Example 2: Git Repository
 
 ```bash
 curl -X POST http://localhost:3000/api/submissions \
@@ -83,7 +79,7 @@ curl -X POST http://localhost:3000/api/submissions \
   -F "team_id=team-42"
 ```
 
-#### Example 3: Remote Archive URL
+### Example 3: Remote Archive URL
 
 ```bash
 curl -X POST http://localhost:3000/api/submissions \
@@ -94,11 +90,23 @@ curl -X POST http://localhost:3000/api/submissions \
   -F "team_id=team-42"
 ```
 
+### Example 4: With Metadata and Webhook
+
+```bash
+curl -X POST http://localhost:3000/api/submissions \
+  -F "problem_id=rest-api-users" \
+  -F "package_type=file" \
+  -F "submission_file=@my-solution.zip" \
+  -F "team_id=team-42" \
+  -F 'submission_metadata={"student_id": "s12345", "attempt": 3}' \
+  -F "notification_url=https://lms.example.com/api/webhooks/submission-complete"
+```
+
 ---
 
-### Response
+## Response
 
-#### Success Response (201 Created)
+### Success Response (201 Created)
 
 ```json
 {
@@ -116,7 +124,7 @@ curl -X POST http://localhost:3000/api/submissions \
 }
 ```
 
-#### Error Responses
+### Error Responses
 
 **400 Bad Request - Missing Required Fields**
 
@@ -171,103 +179,6 @@ curl -X POST http://localhost:3000/api/submissions \
 
 ---
 
-## GET /submissions/:submission_id
-
-Retrieves the current status and details of a submission.
-
-**Endpoint:** `GET /submissions/:submission_id`
-
-### Response Examples
-
-#### Queued Submission
-
-```json
-{
-  "success": true,
-  "data": {
-    "submission_id": "sub_1234567890abcdef",
-    "job_id": "12345",
-    "problem_id": "rest-api-users",
-    "status": "queued",
-    "priority": 7,
-    "enqueued_at": "2025-10-13T10:30:15.789Z"
-  }
-}
-```
-
-#### Running Submission
-
-```json
-{
-  "success": true,
-  "data": {
-    "submission_id": "sub_1234567890abcdef",
-    "job_id": "12345",
-    "problem_id": "rest-api-users",
-    "status": "running",
-    "priority": 7,
-    "enqueued_at": "2025-10-13T10:30:15.789Z",
-    "started_at": "2025-10-13T10:35:00.123Z",
-    "evaluation_state": "running"
-  }
-}
-```
-
-#### Completed Submission
-
-```json
-{
-  "success": true,
-  "data": {
-    "submission_id": "sub_1234567890abcdef",
-    "job_id": "12345",
-    "problem_id": "rest-api-users",
-    "status": "completed",
-    "enqueued_at": "2025-10-13T10:30:15.789Z",
-    "started_at": "2025-10-13T10:35:00.123Z",
-    "completed_at": "2025-10-13T10:40:15.678Z",
-    "result": {
-      "total_score": 87.5,
-      "passed": true
-    }
-  }
-}
-```
-
----
-
-## DELETE /submissions/:submission_id
-
-Cancels a queued or running submission.
-
-**Endpoint:** `DELETE /submissions/:submission_id`
-
-### Response
-
-```json
-{
-  "success": true,
-  "message": "Submission sub_1234567890abcdef cancelled",
-  "data": {
-    "submission_id": "sub_1234567890abcdef",
-    "job_id": "12345",
-    "status": "cancelled"
-  }
-}
-```
-
-**404 Not Found**
-
-```json
-{
-  "success": false,
-  "error": "submission_not_found",
-  "message": "Submission sub_1234567890abcdef not found"
-}
-```
-
----
-
 ## Validation Rules
 
 ### Submission ID Format
@@ -292,7 +203,24 @@ Cancels a queued or running submission.
 - `7-9`: High priority
 - `10`: Critical priority
 
-See [`[SPEC] QUEUE_SYSTEM.md`](%5BSPEC%5D%20QUEUE_SYSTEM.md) for detailed information.
+---
+
+## Webhook Notifications
+
+If a `notification_url` is provided, the judgehost will send a POST request when evaluation completes:
+
+```json
+{
+  "event": "submission_completed",
+  "submission_id": "sub_1234567890abcdef",
+  "problem_id": "rest-api-users",
+  "status": "completed",
+  "total_score": 87.5,
+  "max_score": 100,
+  "completed_at": "2025-10-13T10:40:15.678Z",
+  "result_url": "http://judgehost.example.com/api/results/sub_1234567890abcdef"
+}
+```
 
 ---
 
@@ -300,4 +228,5 @@ See [`[SPEC] QUEUE_SYSTEM.md`](%5BSPEC%5D%20QUEUE_SYSTEM.md) for detailed inform
 
 1. **Public repositories only**: Private Git repositories are not supported
 2. **Idempotency**: Resubmitting the same content creates a new submission
-3. **Rate Limiting**: Configured per judgehost (see [`[SPEC] QUEUE_SYSTEM.md`](%5BSPEC%5D%20QUEUE_SYSTEM.md))
+3. **Rate Limiting**: Configured per judgehost based on resource availability
+4. **Multi-Container Distribution**: Submissions are automatically distributed to appropriate containers based on problem configuration. See [`../data-models/containers/resources.md`](../data-models/containers/resources.md)
