@@ -142,6 +142,24 @@ class Processor extends EventEmitter {
         );
       }
 
+      // Validate problem resources exist (hooks, data, etc.)
+      const resourceMounting = require("../utils/resourceMounting");
+      const validation = await resourceMounting.validateProblemResources(
+        problem.problemId,
+        problem.containers
+      );
+
+      if (!validation.valid) {
+        logger.error(`Problem resource validation failed:`, validation.issues);
+        throw new Error(
+          `Problem resources validation failed: ${validation.issues.join(", ")}`
+        );
+      }
+
+      if (validation.warnings.length > 0) {
+        logger.warn(`Problem resource warnings:`, validation.warnings);
+      }
+
       // Step 2: Download and extract all submission packages
       logger.info(
         `[MultiContainer] Downloading ${

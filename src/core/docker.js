@@ -923,9 +923,17 @@ async function createContainerGroup(
   );
 
   const containerBuilder = require("./containerBuilder");
+  const resourceMounting = require("../utils/resourceMounting");
   const networkName = `judgehost-eval-${submissionId}`;
 
   try {
+    // 0. Ensure results directory structure exists
+    const containerIds = problem.containers.map((c) => c.container_id);
+    await resourceMounting.ensureResultsDirectories(resultsDir, containerIds);
+    logger.info(
+      `Results directory structure created for ${containerIds.length} containers`
+    );
+
     // 1. Create isolated network
     logger.info(`Creating network ${networkName}`);
     const networkId = await createNetwork(submissionId);
@@ -994,7 +1002,12 @@ async function createContainerGroup(
 
       containerImages.set(containerId, imageName);
 
-      // Create container
+      // Get submission path if this container accepts submission
+      const containerSubmissionPath = containerConfig.accepts_submission
+        ? submissionPackages[containerConfig.submission_package_id]
+        : null;
+
+      // Create container with proper mounts
       const dockerContainerId = await createMultiContainer(
         imageName,
         submissionId,
@@ -1002,7 +1015,8 @@ async function createContainerGroup(
         networkName,
         problem,
         containerConfig,
-        resultsDir
+        resultsDir,
+        containerSubmissionPath
       );
 
       containers.push({
@@ -1047,6 +1061,7 @@ async function createContainerGroup(
  * @param {Object} problem - Problem configuration
  * @param {Object} containerConfig - Container-specific configuration
  * @param {string} resultsDir - Results directory path
+ * @param {string} [submissionPath] - Path to submission code (if accepts_submission)
  * @returns {Promise<string>} Docker container ID
  */
 async function createMultiContainer(
@@ -1056,7 +1071,8 @@ async function createMultiContainer(
   networkName,
   problem,
   containerConfig,
-  resultsDir
+  resultsDir,
+  submissionPath = null
 ) {
   const containerName = `${containerId}-${submissionId}`;
 
@@ -1086,25 +1102,22 @@ async function createMultiContainer(
     exposedPorts[`${port}/tcp`] = {};
   });
 
-  // Prepare binds
-  const binds = [];
+  // Prepare resource mounts using the new mounting utility
+  const resourceMounting = require("../utils/resourceMounting");
+  const mounts = await resourceMounting.prepareMounts({
+    submissionId,
+    problemId: problem.problemId,
+    containerId,
+    containerConfig,
+    submissionPath,
+    resultsDir,
+  });
 
-  // Mount results directory for containers that need it
-  if (["sidecar", "tester"].includes(containerConfig.role)) {
-    binds.push(`${resultsDir}:/out:rw`);
-  }
+  // Log mount statistics
+  const mountStats = resourceMounting.getMountStatistics(mounts);
+  logger.debug(`Mount statistics for ${containerId}:`, mountStats);
 
-  // Mount problem files for test/sidecar containers
-  if (["sidecar", "tester"].includes(containerConfig.role)) {
-    const problemDir = path.join(config.paths.problemsDir, problem.problemId);
-    binds.push(`${path.join(problemDir, "hooks")}:/hooks:ro`);
-    binds.push(`${path.join(problemDir, "data")}:/data:ro`);
-  }
-
-  // Add custom volumes from config
-  if (containerConfig.volumes) {
-    binds.push(...containerConfig.volumes);
-  }
+  const { binds, volumes } = mounts;
 
   // Determine network mode
   const networkMode =
@@ -1127,6 +1140,7 @@ async function createMultiContainer(
       ? containerConfig.entrypoint.split(" ")
       : undefined,
     ExposedPorts: exposedPorts,
+    Volumes: volumes, // Anonymous volumes for /workspace, /tmp, etc.
     HostConfig: {
       NetworkMode: networkMode,
       Memory: memoryMB * 1024 * 1024,
@@ -1154,7 +1168,70 @@ async function createMultiContainer(
   };
 
   const container = await docker.createContainer(dockerContainerConfig);
+
+  // If this container accepts submission, we need to populate the /workspace volume
+  // We do this by starting the container temporarily, copying files, then stopping it
+  if (containerConfig.accepts_submission && submissionPath) {
+    logger.debug(`Initializing workspace for container ${containerId}`);
+    await initializeWorkspace(container.id, submissionPath);
+  }
+
   return container.id;
+}
+
+/**
+ * Initialize the /workspace volume with submission code
+ * @param {string} containerId - Docker container ID
+ * @param {string} submissionPath - Path to submission code on host
+ * @returns {Promise<void>}
+ */
+async function initializeWorkspace(containerId, submissionPath) {
+  const container = docker.getContainer(containerId);
+
+  try {
+    // Start container temporarily
+    await container.start();
+
+    // Execute command to copy from /submission to /workspace
+    const exec = await container.exec({
+      Cmd: ["/bin/sh", "-c", "cp -r /submission/. /workspace/"],
+      AttachStdout: true,
+      AttachStderr: true,
+    });
+
+    const stream = await exec.start();
+
+    // Wait for copy to complete
+    await new Promise((resolve, reject) => {
+      stream.on("end", async () => {
+        const inspectData = await exec.inspect();
+        if (inspectData.ExitCode === 0) {
+          resolve();
+        } else {
+          reject(
+            new Error(
+              `Failed to initialize workspace: exit code ${inspectData.ExitCode}`
+            )
+          );
+        }
+      });
+      stream.on("error", reject);
+    });
+
+    // Stop container
+    await container.stop();
+
+    logger.debug(`Workspace initialized for container ${containerId}`);
+  } catch (error) {
+    logger.error(`Failed to initialize workspace for ${containerId}:`, error);
+    // Try to stop container if it's still running
+    try {
+      await container.stop({ t: 1 });
+    } catch (e) {
+      // Ignore stop errors
+    }
+    throw error;
+  }
 }
 
 /**
