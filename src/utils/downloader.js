@@ -205,6 +205,7 @@ module.exports = {
   download,
   downloadAndExtract,
   extractBuffer,
+  extractArchive: extractBuffer, // Alias for consistency
   downloadToFile,
   prepareSubmissionFromZip,
   downloadProblemPackageToFile,

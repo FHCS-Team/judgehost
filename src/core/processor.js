@@ -1,1373 +1,561 @@
 /**
- * Processor module - Orchestrates submission evaluation workflow
- *
- * This module coordinates the entire evaluation process:
- * 1. Download/extract submission
- * 2. Build evaluation image
- * 3. Create and run container
- * 4. Execute hooks (pre, post, periodic)
- * 5. Collect results and scores
- * 6. Cleanup resources
+ * Core Processor Module
+ * Handles problem package processing, submission evaluation, and result management
  */
 
-const fs = require("fs/promises");
 const path = require("path");
-const EventEmitter = require("events");
+const fs = require("fs/promises");
 const logger = require("../utils/logger");
 const config = require("../config");
-const downloader = require("../utils/downloader");
-const docker = require("./docker");
-const { completeJob, failJob, queueEvents } = require("./queue");
-const { createMetricsOrchestrator } = require("./metricsCollector");
-const hookOrchestrator = require("./hookOrchestrator");
+const { getQueue, Priority } = require("./queue");
+const dockerClient = require("./docker/client");
+const { buildImage } = require("./docker/image");
+const { extractArchive } = require("../utils/downloader");
+
+// In-memory storage for problem metadata
+const problemsRegistry = new Map();
+
+// Active evaluations
+const activeEvaluations = new Map();
 
 /**
- * Evaluation states
- */
-const EvaluationState = {
-  DOWNLOADING: "downloading",
-  BUILDING: "building",
-  STARTING: "starting",
-  RUNNING_PRE_HOOKS: "running_pre_hooks",
-  DEPLOYING: "deploying",
-  RUNNING_POST_HOOKS: "running_post_hooks",
-  COLLECTING_RESULTS: "collecting_results",
-  COMPLETED: "completed",
-  FAILED: "failed",
-};
-
-/**
- * Processor class manages evaluation workflow
- */
-class Processor extends EventEmitter {
-  constructor() {
-    super();
-    this.activeEvaluations = new Map(); // jobId -> evaluation state
-
-    // Listen for queue events
-    queueEvents.on("job:started", (job) => this.handleJobStarted(job));
-  }
-
-  /**
-   * Handle job started event from queue
-   */
-  async handleJobStarted(job) {
-    logger.info(`Processing job ${job.id} for problem ${job.problemId}`);
-
-    try {
-      await this.processSubmission(job);
-    } catch (error) {
-      logger.error(`Job ${job.id} processing failed:`, error);
-      failJob(job.id, {
-        message: error.message,
-        stack: error.stack,
-        phase: this.activeEvaluations.get(job.id)?.state || "unknown",
-      });
-    } finally {
-      this.activeEvaluations.delete(job.id);
-    }
-  }
-
-  /**
-   * Process a submission through the entire evaluation workflow
-   * Multi-container is now the only supported architecture
-   */
-  async processSubmission(job) {
-    const evaluationState = {
-      jobId: job.id,
-      submissionId: job.submissionId,
-      problemId: job.problemId,
-      state: EvaluationState.DOWNLOADING,
-      startTime: Date.now(),
-      containerId: null,
-      imageId: null,
-    };
-
-    this.activeEvaluations.set(job.id, evaluationState);
-
-    try {
-      // Step 1: Load problem configuration
-      logger.info(`Loading problem ${job.problemId}`);
-      const problem = await this.loadProblem(job.problemId);
-
-      // Validate problem has containers configuration
-      if (!problem.containers || !Array.isArray(problem.containers)) {
-        throw new Error(
-          `Problem ${job.problemId} missing required 'containers' field. Multi-container architecture is required.`
-        );
-      }
-
-      // Use multi-container evaluation (the only supported workflow)
-      logger.info(
-        `Processing multi-container evaluation for ${job.submissionId}`
-      );
-      return await this.processMultiContainerEvaluation(
-        job,
-        problem,
-        evaluationState
-      );
-    } catch (error) {
-      logger.error(`Error processing submission ${job.submissionId}:`, error);
-
-      // Cleanup on failure
-      if (evaluationState.containerId) {
-        await docker
-          .cleanup(evaluationState.containerId, false)
-          .catch(() => {});
-      }
-
-      throw error;
-    }
-  }
-
-  /**
-   * Process submission using multi-container architecture
-   * Supports multiple submission packages and multiple containers
-   */
-  async processMultiContainerEvaluation(job, problem, evaluationState) {
-    let containerGroup = null;
-
-    try {
-      // Step 1: Validate problem configuration
-      if (!problem.containers || problem.containers.length === 0) {
-        throw new Error(
-          "Multi-container problem must define at least one container"
-        );
-      }
-
-      if (
-        !problem.submission_packages ||
-        problem.submission_packages.length === 0
-      ) {
-        throw new Error(
-          "Multi-container problem must define submission package mappings"
-        );
-      }
-
-      // Validate problem resources exist (hooks, data, etc.)
-      // TODO: Fix resource validation to use correct paths
-      // const resourceMounting = require("../utils/resourceMounting");
-      // const validation = await resourceMounting.validateProblemResources(
-      //   problem.problemId,
-      //   problem.containers
-      // );
-
-      // if (!validation.valid) {
-      //   logger.error(`Problem resource validation failed:`, validation.issues);
-      //   throw new Error(
-      //     `Problem resources validation failed: ${validation.issues.join(", ")}`
-      //   );
-      // }
-
-      // if (validation.warnings.length > 0) {
-      //   logger.warn(`Problem resource warnings:`, validation.warnings);
-      // }
-
-      // Step 2: Download and extract all submission packages
-      logger.info(
-        `[MultiContainer] Downloading ${
-          job.packages?.length || 1
-        } submission package(s) for ${job.submissionId}`
-      );
-      this.updateState(evaluationState, EvaluationState.DOWNLOADING);
-
-      const submissionPackages = await this.downloadMultiPackageSubmission(
-        job,
-        problem
-      );
-
-      // Step 3: Prepare results directory
-      const resultsDir = path.join(config.paths.resultsDir, job.submissionId);
-      await fs.mkdir(resultsDir, { recursive: true });
-      await fs.mkdir(path.join(resultsDir, "logs"), { recursive: true });
-
-      // Step 4: Create container group (network + all containers)
-      logger.info(
-        `[MultiContainer] Creating container group for ${job.submissionId}`
-      );
-      this.updateState(evaluationState, EvaluationState.BUILDING);
-
-      containerGroup = await docker.createContainerGroup(
-        job.submissionId,
-        problem,
-        submissionPackages,
-        resultsDir
-      );
-
-      evaluationState.containerGroup = containerGroup;
-
-      // Step 5: Start all containers in dependency order
-      logger.info(
-        `[MultiContainer] Starting ${containerGroup.containers.length} containers`
-      );
-      this.updateState(evaluationState, EvaluationState.STARTING);
-
-      await docker.startContainerGroup(containerGroup);
-
-      // Step 5.5: Execute container stages (build, test, etc.)
-      logger.info(`[MultiContainer] Executing container stages`);
-      this.updateState(evaluationState, EvaluationState.RUNNING);
-      await this.executeContainerStages(containerGroup, problem, resultsDir);
-
-      // Step 5.6: Initialize and start metrics collection
-      logger.info(
-        `[MultiContainer] Starting metrics collection for all containers`
-      );
-      const metricsOrchestrator = createMetricsOrchestrator();
-      metricsOrchestrator.initialize(
-        job.submissionId,
-        problem.problemId,
-        containerGroup
-      );
-      await metricsOrchestrator.startAll();
-
-      // Store metrics orchestrator for cleanup
-      evaluationState.metricsOrchestrator = metricsOrchestrator;
-
-      // Step 5.7: Execute hooks on containers
-      logger.info(`[MultiContainer] Executing hooks on containers`);
-      await this.executeMultiContainerHooks(
-        containerGroup,
-        problem,
-        resultsDir
-      );
-
-      // Step 6: Wait for containers to complete (or stop them after hooks)
-      logger.info(
-        `[MultiContainer] Hook execution complete, stopping containers`
-      );
-      this.updateState(evaluationState, EvaluationState.RUNNING_POST_HOOKS);
-
-      // Step 7: Collect logs from all containers
-      logger.info(`[MultiContainer] Collecting logs from all containers`);
-      const containerLogs = await docker.getContainerGroupLogs(containerGroup);
-
-      // Save individual container logs
-      for (const [containerId, logs] of Object.entries(containerLogs)) {
-        const logPath = path.join(resultsDir, "logs", `${containerId}.log`);
-        await fs.writeFile(logPath, logs);
-      }
-
-      // Create combined log file
-      const combinedLogs = Object.entries(containerLogs)
-        .map(
-          ([containerId, logs]) =>
-            `\n=== Container: ${containerId} ===\n${logs}`
-        )
-        .join("\n");
-
-      await fs.writeFile(
-        path.join(resultsDir, "logs", "combined.log"),
-        combinedLogs
-      );
-
-      // Step 7.5: Stop metrics collection
-      logger.info(`[MultiContainer] Stopping metrics collection`);
-      if (evaluationState.metricsOrchestrator) {
-        await evaluationState.metricsOrchestrator.stopAll();
-        await evaluationState.metricsOrchestrator.saveMetrics(resultsDir);
-        await evaluationState.metricsOrchestrator.saveTimeSeries(resultsDir);
-      }
-
-      // Step 8: Collect results
-      logger.info(
-        `[MultiContainer] Collecting results for ${job.submissionId}`
-      );
-      this.updateState(evaluationState, EvaluationState.COLLECTING_RESULTS);
-
-      const results = await this.collectResults(job, problem, resultsDir, {
-        executionResults,
-        containerLogs,
-        containerGroup,
-        metricsOrchestrator: evaluationState.metricsOrchestrator,
-      });
-
-      // Step 9: Cleanup containers and network
-      logger.info(`[MultiContainer] Cleaning up container group`);
-      if (config.docker.cleanupContainersAfterEval) {
-        await docker.cleanupContainerGroup(job.submissionId);
-      }
-
-      // Step 10: Mark job as completed
-      this.updateState(evaluationState, EvaluationState.COMPLETED);
-      completeJob(job.id, results);
-
-      logger.info(`[MultiContainer] Job ${job.id} completed successfully`);
-
-      // Send notification if configured
-      if (job.notificationUrl) {
-        this.sendNotification(job.notificationUrl, job.id, results).catch(
-          (err) => {
-            logger.warn(
-              `Failed to send notification for job ${job.id}:`,
-              err.message
-            );
-          }
-        );
-      }
-
-      return results;
-    } catch (error) {
-      logger.error(
-        `[MultiContainer] Error processing submission ${job.submissionId}:`,
-        error
-      );
-
-      // Stop metrics collection if started
-      if (evaluationState.metricsOrchestrator) {
-        try {
-          await evaluationState.metricsOrchestrator.stopAll();
-        } catch (metricsError) {
-          logger.warn("Failed to stop metrics collection:", metricsError);
-        }
-      }
-
-      // Cleanup on failure
-      if (containerGroup) {
-        await docker.cleanupContainerGroup(job.submissionId).catch(() => {});
-      }
-
-      throw error;
-    }
-  }
-
-  /**
-   * Update evaluation state and emit event
-   */
-  updateState(evaluationState, newState) {
-    evaluationState.state = newState;
-    this.emit("evaluation:state", {
-      jobId: evaluationState.jobId,
-      submissionId: evaluationState.submissionId,
-      state: newState,
-    });
-  }
-
-  /**
-   * Load problem configuration
-   */
-  async loadProblem(problemId) {
-    const problemDir = path.join(config.paths.problemsDir, problemId);
-    const configPath = path.join(problemDir, "config.json");
-
-    try {
-      const configContent = await fs.readFile(configPath, "utf8");
-      const problemConfig = JSON.parse(configContent);
-
-      return {
-        problemId,
-        ...problemConfig,
-      };
-    } catch (error) {
-      throw new Error(`Failed to load problem ${problemId}: ${error.message}`);
-    }
-  }
-
-  /**
-   * Download multiple submission packages for multi-container problems
-   * @param {Object} job - Job information
-   * @param {Object} problem - Problem configuration
-   * @returns {Promise<Object>} Map of packageId -> extracted path
-   */
-  async downloadMultiPackageSubmission(job, problem) {
-    const submissionPackages = {};
-
-    // If job has multiple packages, use them
-    if (job.packages && Array.isArray(job.packages)) {
-      for (const packageSource of job.packages) {
-        const packageId = packageSource.package_id;
-
-        logger.info(`Downloading package ${packageId} for ${job.submissionId}`);
-
-        const packageDir = path.join(
-          config.paths.submissionsDir,
-          job.submissionId,
-          packageId
-        );
-        await fs.mkdir(packageDir, { recursive: true });
-
-        // Download based on source type
-        const extractedPath = await this.downloadPackageSource(
-          packageSource,
-          packageDir
-        );
-
-        submissionPackages[packageId] = extractedPath;
-      }
-    } else {
-      // Backward compatibility: single package submission
-      // Map it to the first required submission package
-      const requiredPackages = problem.submission_packages.filter(
-        (p) => p.required !== false
-      );
-
-      if (requiredPackages.length === 0) {
-        throw new Error(
-          "Problem requires no submission packages, but submission was provided"
-        );
-      }
-
-      const defaultPackageId = requiredPackages[0].package_id;
-      logger.info(`Single package submission, mapping to ${defaultPackageId}`);
-
-      const packageDir = path.join(
-        config.paths.submissionsDir,
-        job.submissionId,
-        defaultPackageId
-      );
-      await fs.mkdir(packageDir, { recursive: true });
-
-      const extractedPath = await this.downloadPackageSource(
-        {
-          package_source: job.packageSource || job.packageType,
-          package_url: job.packageUrl,
-          git_url: job.gitUrl,
-          git_branch: job.gitBranch,
-          git_commit: job.gitCommit,
-          local_path: job.localPath,
-        },
-        packageDir
-      );
-
-      submissionPackages[defaultPackageId] = extractedPath;
-    }
-
-    // Validate all required packages are present
-    for (const packageMapping of problem.submission_packages) {
-      if (
-        packageMapping.required !== false &&
-        !submissionPackages[packageMapping.package_id]
-      ) {
-        throw new Error(
-          `Required submission package missing: ${packageMapping.package_id}`
-        );
-      }
-    }
-
-    return submissionPackages;
-  }
-
-  /**
-   * Execute hooks on all containers in the group
-   * @param {Object} containerGroup - Container group information
-   * @param {Object} problem - Problem configuration
-   * @param {string} resultsDir - Results directory path
-   * @returns {Promise<void>}
-   */
-  /**
-   * Execute stages for all containers in the group
-   * Stages are executed sequentially within each container (e.g., build, then test)
-   * @param {Object} containerGroup - Container group information
-   * @param {Object} problem - Problem configuration
-   * @param {string} resultsDir - Results directory path
-   * @returns {Promise<void>}
-   */
-  async executeContainerStages(containerGroup, problem, resultsDir) {
-    for (const containerInfo of containerGroup.containers) {
-      const {
-        dockerContainerId,
-        containerId,
-        config: containerConfig,
-      } = containerInfo;
-
-      // Get the container config from problem definition
-      const problemContainer = problem.containers.find(
-        (c) => c.container_id === containerId
-      );
-
-      if (!problemContainer || !problemContainer.stages) {
-        logger.info(`No stages defined for container ${containerId}, skipping`);
-        continue;
-      }
-
-      const container = docker.getDockerContainer(dockerContainerId);
-      const stages = problemContainer.stages;
-
-      logger.info(
-        `Executing ${stages.length} stage(s) for container ${containerId}`
-      );
-
-      // First, copy submission files to workspace if this container accepts submission
-      if (containerConfig.accepts_submission) {
-        logger.info(
-          `[${containerId}] Copying submission files to workspace...`
-        );
-        try {
-          const copyExec = await container.exec({
-            Cmd: ["sh", "-c", "cp -r /submission/. /workspace/"],
-            AttachStdout: true,
-            AttachStderr: true,
-          });
-
-          const copyStream = await copyExec.start({
-            hijack: true,
-            stdin: false,
-          });
-
-          // Wait for copy to complete
-          await new Promise((resolve, reject) => {
-            const chunks = [];
-            copyStream.on("data", (chunk) => chunks.push(chunk));
-            copyStream.on("end", () => resolve());
-            copyStream.on("error", reject);
-          });
-
-          const copyResult = await copyExec.inspect();
-          if (copyResult.ExitCode !== 0) {
-            throw new Error(
-              `Failed to copy submission files: exit code ${copyResult.ExitCode}`
-            );
-          }
-
-          logger.info(
-            `[${containerId}] Submission files copied to workspace successfully`
-          );
-        } catch (error) {
-          logger.error(
-            `[${containerId}] Failed to initialize workspace: ${error.message}`
-          );
-          throw error;
-        }
-      }
-
-      // Execute stages sequentially
-      for (const stage of stages) {
-        const stageId = stage.stage_id || stage.name;
-        const stageName = stage.name || stageId;
-        const command = stage.command;
-        const workingDir = stage.working_directory || "/workspace";
-        const timeout = (stage.timeout || 300) * 1000; // Convert to ms
-
-        logger.info(
-          `[${containerId}] Executing stage: ${stageName} (${stageId})`
-        );
-        logger.info(`[${containerId}] Command: ${command}`);
-        logger.info(`[${containerId}] Working directory: ${workingDir}`);
-        logger.info(`[${containerId}] Timeout: ${timeout / 1000}s`);
-
-        try {
-          // Execute the stage command via docker exec
-          const exec = await container.exec({
-            Cmd: ["sh", "-c", `cd ${workingDir} && ${command}`],
-            AttachStdout: true,
-            AttachStderr: true,
-            WorkingDir: workingDir,
-          });
-
-          const stream = await exec.start({ hijack: true, stdin: false });
-
-          // Collect output
-          let output = "";
-          const outputPromise = new Promise((resolve, reject) => {
-            const chunks = [];
-            stream.on("data", (chunk) => {
-              chunks.push(chunk);
-            });
-            stream.on("end", () => {
-              output = Buffer.concat(chunks).toString();
-              resolve();
-            });
-            stream.on("error", reject);
-          });
-
-          // Wait for execution with timeout
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(
-              () => reject(new Error(`Stage ${stageId} timed out`)),
-              timeout
-            )
-          );
-
-          await Promise.race([outputPromise, timeoutPromise]);
-
-          // Check exit code
-          const inspectResult = await exec.inspect();
-          const exitCode = inspectResult.ExitCode;
-
-          // Log output
-          if (output) {
-            logger.info(`[${containerId}] Stage output:\n${output.trim()}`);
-          }
-
-          // Save stage log
-          const stageLogDir = path.join(resultsDir, "logs", "stages");
-          await fs.mkdir(stageLogDir, { recursive: true });
-          const stageLogPath = path.join(
-            stageLogDir,
-            `${containerId}_${stageId}.log`
-          );
-          await fs.writeFile(stageLogPath, output);
-
-          if (exitCode !== 0) {
-            const errorMsg = `Stage ${stageName} failed with exit code ${exitCode}`;
-            logger.error(`[${containerId}] ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-
-          logger.info(
-            `[${containerId}] Stage ${stageName} completed successfully`
-          );
-        } catch (error) {
-          logger.error(
-            `[${containerId}] Stage ${stageName} failed: ${error.message}`
-          );
-          throw new Error(
-            `Container ${containerId} stage ${stageName} failed: ${error.message}`
-          );
-        }
-      }
-
-      logger.info(`Completed all stages for container ${containerId}`);
-    }
-  }
-
-  /**
-   * Execute hooks on all containers in the group
-   * @param {Object} containerGroup - Container group information
-   * @param {Object} problem - Problem configuration
-   * @param {string} resultsDir - Results directory path
-   * @returns {Promise<void>}
-   */
-  async executeMultiContainerHooks(containerGroup, problem, resultsDir) {
-    const problemDir = path.join(config.paths.problemsDir, problem.problemId);
-
-    for (const containerInfo of containerGroup.containers) {
-      const {
-        dockerContainerId,
-        containerId,
-        config: containerConfig,
-      } = containerInfo;
-      const container = docker.getDockerContainer(dockerContainerId);
-
-      logger.info(`Executing hooks for container ${containerId}`);
-
-      // Discover hooks for this container
-      const preHooks = await hookOrchestrator.discoverHooks(
-        problemDir,
-        containerId,
-        "pre"
-      );
-      const postHooks = await hookOrchestrator.discoverHooks(
-        problemDir,
-        containerId,
-        "post"
-      );
-
-      // Execute pre-hooks sequentially
-      if (preHooks.length > 0) {
-        logger.info(
-          `Executing ${preHooks.length} pre-hook(s) for ${containerId}`
-        );
-        await hookOrchestrator.executePreHooks(container, preHooks, {
-          timeout: 60000, // 1 minute per hook
-        });
-      }
-
-      // Execute post-hooks (these typically run the tests)
-      if (postHooks.length > 0) {
-        logger.info(
-          `Executing ${postHooks.length} post-hook(s) for ${containerId}`
-        );
-        await hookOrchestrator.executePostHooks(container, postHooks, {
-          timeout: 300000, // 5 minutes per hook
-          sequential: true, // Run sequentially for now
-        });
-      }
-
-      // Collect rubric outputs from this container
-      const containerResultsDir = path.join(resultsDir, containerId);
-      await hookOrchestrator.collectRubricOutputs(
-        container,
-        containerResultsDir
-      );
-
-      logger.info(`Completed hook execution for container ${containerId}`);
-    }
-  }
-
-  /**
-   * Download a package from various sources
-   * @param {Object} packageSource - Package source configuration
-   * @param {string} targetDir - Target directory for extraction
-   * @returns {Promise<string>} Path to extracted content
-   */
-  async downloadPackageSource(packageSource, targetDir) {
-    const sourceType = packageSource.package_source;
-
-    switch (sourceType) {
-      case "git":
-        if (!packageSource.git_url) {
-          throw new Error("Git URL not provided for package");
-        }
-        return await this.downloadGitSubmission(
-          {
-            gitUrl: packageSource.git_url,
-            gitBranch: packageSource.git_branch,
-            gitCommit: packageSource.git_commit,
-          },
-          targetDir
-        );
-
-      case "url":
-        if (!packageSource.package_url) {
-          throw new Error("URL not provided for package");
-        }
-        return await this.downloadUrlSubmission(
-          {
-            packageUrl: packageSource.package_url,
-            checksum: packageSource.checksum,
-          },
-          targetDir
-        );
-
-      case "file":
-        // File should already be uploaded to target directory
-        if (packageSource.local_path) {
-          // If local_path is specified, copy from there
-          await fs.cp(packageSource.local_path, targetDir, {
-            recursive: true,
-          });
-        }
-        return targetDir;
-
-      default:
-        throw new Error(`Unknown package source type: ${sourceType}`);
-    }
-  }
-
-  /**
-   * Download submission from Git repository
-   */
-  async downloadGitSubmission(job, submissionDir) {
-    if (!job.gitUrl) {
-      throw new Error("Git URL not provided");
-    }
-
-    const simpleGit = require("simple-git");
-    const git = simpleGit();
-
-    const cloneOptions = [];
-
-    // Shallow clone if enabled
-    if (config.git.shallowClone) {
-      cloneOptions.push("--depth=1");
-    }
-
-    // Clone specific branch
-    if (job.gitBranch) {
-      cloneOptions.push("--branch", job.gitBranch);
-    }
-
-    logger.info(`Cloning Git repository: ${job.gitUrl}`);
-
-    try {
-      await git.clone(job.gitUrl, submissionDir, cloneOptions);
-
-      // Checkout specific commit if provided
-      if (job.gitCommit) {
-        const repoGit = simpleGit(submissionDir);
-        await repoGit.checkout(job.gitCommit);
-      }
-
-      // Remove .git directory to save space
-      const gitDir = path.join(submissionDir, ".git");
-      await fs.rm(gitDir, { recursive: true, force: true }).catch(() => {});
-
-      logger.info(`Successfully cloned Git repository to ${submissionDir}`);
-      return submissionDir;
-    } catch (error) {
-      throw new Error(`Git clone failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Download submission from URL (archive)
-   */
-  async downloadUrlSubmission(job, submissionDir) {
-    if (!job.packageUrl) {
-      throw new Error("Package URL not provided");
-    }
-
-    logger.info(`Downloading archive from: ${job.packageUrl}`);
-
-    try {
-      let archiveBuffer;
-
-      if (job.archiveChecksum) {
-        archiveBuffer = await downloader.downloadVerified(
-          job.packageUrl,
-          job.archiveChecksum
-        );
-      } else {
-        archiveBuffer = await downloader.download(job.packageUrl);
-      }
-
-      // Extract archive to submission directory
-      await downloader.extractBuffer(archiveBuffer, submissionDir);
-
-      logger.info(
-        `Successfully downloaded and extracted archive to ${submissionDir}`
-      );
-      return submissionDir;
-    } catch (error) {
-      throw new Error(`Archive download failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Extract results from container to results directory
-   */
-  async extractContainerResults(containerId, resultsDir) {
-    try {
-      // Copy /out directory from container to host
-      await docker.copyFromContainer(containerId, "/out/", resultsDir);
-
-      logger.info(`Extracted results from container ${containerId}`);
-      return true;
-    } catch (error) {
-      logger.error(`Failed to extract container results:`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Collect evaluation results from output directory
-   */
-  async collectResults(job, problem, resultsDir, executionResult) {
-    const rubricEvaluator = require("./rubricEvaluator");
-
-    const results = {
-      submissionId: job.submissionId,
-      problemId: job.problemId,
-      teamId: job.teamId,
-      evaluatedAt: new Date().toISOString(),
-      execution_status: executionResult.statusCode === 0 ? "success" : "failed",
-      executionStatus: executionResult.statusCode === 0 ? "success" : "failed", // Alias
-      timedOut: executionResult.timedOut || false,
-      rubricScores: [],
-      totalScore: 0,
-      maxScore: 0,
-      percentage: 0,
-      logs: executionResult.logs || "",
-      metadata: {},
-    };
-
-    try {
-      // Collect rubric evaluations using the new rubric evaluator
-      const containers = executionResult.containerGroup?.containers || [];
-      const rubricEvaluation = await rubricEvaluator.collectRubricEvaluations(
-        resultsDir,
-        containers,
-        problem
-      );
-
-      // Map to results format
-      results.rubricScores = rubricEvaluation.rubric_results;
-      results.totalScore = rubricEvaluation.total_score;
-      results.maxScore = rubricEvaluation.max_score;
-      results.percentage = rubricEvaluation.percentage;
-
-      // Add container-specific results
-      results.containers_results = rubricEvaluation.rubrics_by_container;
-
-      // Add evaluation errors if any
-      if (rubricEvaluation.evaluation_errors.length > 0) {
-        logger.warn(
-          `Rubric evaluation had ${rubricEvaluation.evaluation_errors.length} error(s)`
-        );
-        results.rubric_errors = rubricEvaluation.evaluation_errors;
-      }
-
-      // Generate feedback summary
-      results.feedback = rubricEvaluator.generateFeedbackSummary(
-        rubricEvaluation.rubric_results
-      );
-
-      // Overall result
-      results.overall_result = {
-        passed: rubricEvaluation.percentage >= 50, // Pass threshold
-        total_score: rubricEvaluation.total_score,
-        max_score: rubricEvaluation.max_score,
-        percentage: rubricEvaluation.percentage,
-      };
-
-      logger.info(
-        `Rubric evaluation complete: ${results.totalScore}/${results.maxScore} (${results.percentage}%)`
-      );
-
-      // Add metrics if available
-      if (executionResult.metricsOrchestrator) {
-        const metricsReport =
-          executionResult.metricsOrchestrator.generateReport();
-        results.metrics = metricsReport;
-        results.execution_time_seconds = metricsReport.execution_time_seconds;
-        results.resource_usage = metricsReport.total_resource_usage;
-        results.containers_metrics = metricsReport.containers_summary;
-        logger.info(
-          `Metrics collected: ${metricsReport.containers_summary.length} containers, ${metricsReport.execution_time_seconds}s execution time`
-        );
-      }
-
-      // Collect execution metadata
-      const metadataFiles = [
-        "execution_metadata.json",
-        "performance_metrics.json",
-        "summary.json",
-      ];
-
-      for (const metaFile of metadataFiles) {
-        const metaPath = path.join(resultsDir, metaFile);
-        try {
-          const metaContent = await fs.readFile(metaPath, "utf8");
-          results.metadata[metaFile.replace(".json", "")] =
-            JSON.parse(metaContent);
-        } catch (err) {
-          // Metadata file optional
-        }
-      }
-
-      // Collect logs if available
-      const logsDir = path.join(resultsDir, "logs");
-      const logsExist = await fs
-        .access(logsDir)
-        .then(() => true)
-        .catch(() => false);
-
-      if (logsExist) {
-        const logFiles = await fs.readdir(logsDir);
-        results.log_files = logFiles;
-
-        // Combine main logs
-        const mainLogs = [];
-        for (const logFile of [
-          "entrypoint.log",
-          "submission.log",
-          "pre_hooks.log",
-          "post_hooks.log",
-        ]) {
-          const logPath = path.join(logsDir, logFile);
-          try {
-            const logContent = await fs.readFile(logPath, "utf8");
-            mainLogs.push(`\n=== ${logFile} ===\n${logContent}`);
-          } catch (err) {
-            // Log file optional
-          }
-        }
-
-        if (mainLogs.length > 0) {
-          results.logs = mainLogs.join("\n");
-        }
-      }
-
-      // Save complete results
-      const resultsPath = path.join(resultsDir, "results.json");
-      await fs.writeFile(resultsPath, JSON.stringify(results, null, 2));
-
-      logger.info(
-        `Results collected: ${results.totalScore}/${results.maxScore} (${results.percentage}%)`
-      );
-
-      return results;
-    } catch (error) {
-      logger.error(`Error collecting results:`, error);
-
-      // Return partial results on error
-      return {
-        ...results,
-        error: error.message,
-        evaluation_status: "error",
-      };
-    }
-  }
-
-  /**
-   * Send notification webhook
-   */
-  async sendNotification(url, jobId, results) {
-    const axios = require("axios");
-
-    try {
-      await axios.post(
-        url,
-        {
-          event: "evaluation.completed",
-          jobId,
-          submissionId: results.submissionId,
-          results: {
-            totalScore: results.totalScore,
-            maxScore: results.maxScore,
-            percentage: results.percentage,
-            executionStatus: results.executionStatus,
-          },
-        },
-        {
-          timeout: 5000,
-        }
-      );
-
-      logger.info(`Notification sent to ${url} for job ${jobId}`);
-    } catch (error) {
-      logger.warn(`Failed to send notification: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Get active evaluations
-   */
-  getActiveEvaluations() {
-    return Array.from(this.activeEvaluations.values()).map((state) => ({
-      jobId: state.jobId,
-      submissionId: state.submissionId,
-      problemId: state.problemId,
-      state: state.state,
-      duration: Date.now() - state.startTime,
-    }));
-  }
-
-  /**
-   * Get evaluation status
-   */
-  getEvaluationStatus(jobId) {
-    const state = this.activeEvaluations.get(jobId);
-    if (!state) {
-      return null;
-    }
-
-    return {
-      jobId: state.jobId,
-      submissionId: state.submissionId,
-      problemId: state.problemId,
-      state: state.state,
-      duration: Date.now() - state.startTime,
-      containerId: state.containerId,
-    };
-  }
-}
-
-// Singleton instance
-let processorInstance = null;
-
-/**
- * Get processor instance (singleton)
- */
-function getProcessor() {
-  if (!processorInstance) {
-    processorInstance = new Processor();
-  }
-  return processorInstance;
-}
-
-/**
- * Initialize processor (start listening to queue events)
+ * Initialize processor and start processing queue
  */
 function initializeProcessor() {
-  const processor = getProcessor();
-  logger.info("Processor initialized and listening for jobs");
-  return processor;
+  logger.info("Initializing processor...");
+
+  // Load existing problems from disk
+  loadProblemsFromDisk().catch((error) => {
+    logger.error("Error loading problems from disk:", error);
+  });
+
+  // Start processing queue
+  const queue = getQueue();
+  queue.on("job-ready", async (job) => {
+    try {
+      logger.info(
+        `Processing job ${job.id} for submission ${job.submissionId}`
+      );
+      await processSubmission(job);
+    } catch (error) {
+      logger.error(`Error processing job ${job.id}:`, error);
+      job.fail(error);
+    }
+  });
+
+  logger.info("Processor initialized");
 }
 
 /**
- * Process a problem package (register problem)
+ * Load problems from disk storage
+ */
+async function loadProblemsFromDisk() {
+  try {
+    const problemsDir = config.paths.problemsDir;
+    await fs.mkdir(problemsDir, { recursive: true });
+
+    const entries = await fs.readdir(problemsDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const problemId = entry.name;
+      const configPath = path.join(problemsDir, problemId, "config.json");
+
+      try {
+        const configContent = await fs.readFile(configPath, "utf8");
+        const config = JSON.parse(configContent);
+
+        problemsRegistry.set(problemId, {
+          problemId: config.problem_id,
+          problemName: config.problem_name,
+          projectType: config.project_type,
+          config: config,
+          packagePath: path.join(problemsDir, problemId),
+          imageName: `problem-${problemId}:latest`,
+          registeredAt: new Date(),
+        });
+
+        logger.info(`Loaded problem: ${problemId}`);
+      } catch (error) {
+        logger.warn(`Failed to load problem ${problemId}:`, error.message);
+      }
+    }
+
+    logger.info(`Loaded ${problemsRegistry.size} problems from disk`);
+  } catch (error) {
+    logger.error("Error loading problems from disk:", error);
+    throw error;
+  }
+}
+
+/**
+ * Process a problem package
+ * @param {string} problemId - Problem identifier
+ * @param {string} packagePath - Path to problem package (archive or directory)
+ * @param {Object} options - Processing options
+ * @returns {Promise<Object>} Processing result
  */
 async function processProblemPackage(problemId, packagePath, options = {}) {
+  const { projectType, forceRebuild = false, buildTimeout } = options;
+
   logger.info(`Processing problem package: ${problemId}`, {
     problemId,
     packagePath,
     options,
   });
 
-  const problemDir = path.join(config.paths.problemsDir, problemId);
-
   try {
+    // Check if problem already exists
+    if (problemsRegistry.has(problemId) && !forceRebuild) {
+      throw new Error(
+        `Problem ${problemId} already exists. Use force_rebuild to override.`
+      );
+    }
+
     // Create problem directory
+    const problemDir = path.join(config.paths.problemsDir, problemId);
     await fs.mkdir(problemDir, { recursive: true });
-    logger.debug(`Created problem directory: ${problemDir}`);
 
-    // Extract package to problem directory
-    logger.info(`Extracting package to: ${problemDir}`);
-    if (packagePath.endsWith(".tar.gz") || packagePath.endsWith(".zip")) {
-      try {
-        const packageBuffer = await fs.readFile(packagePath);
-        logger.debug(`Package buffer size: ${packageBuffer.length} bytes`);
-        await downloader.extractBuffer(packageBuffer, problemDir);
-        logger.info(`Successfully extracted package`);
+    // Check if packagePath is a file or directory
+    const stats = await fs.stat(packagePath);
 
-        // Check if extraction created a subdirectory
-        const dirContents = await fs.readdir(problemDir);
-        logger.debug(`Extracted directory contents:`, { files: dirContents });
-
-        // If there's only one subdirectory and no config.json at root, move files up
-        if (dirContents.length === 1 && !dirContents.includes("config.json")) {
-          const subDir = path.join(problemDir, dirContents[0]);
-          const stat = await fs.stat(subDir);
-
-          if (stat.isDirectory()) {
-            logger.info(
-              `Detected subdirectory extraction, moving files up from ${dirContents[0]}`
-            );
-
-            // Move all files from subdirectory to problemDir
-            const subDirContents = await fs.readdir(subDir);
-            for (const file of subDirContents) {
-              const srcPath = path.join(subDir, file);
-              const destPath = path.join(problemDir, file);
-              await fs.rename(srcPath, destPath);
-            }
-
-            // Remove the now-empty subdirectory
-            await fs.rmdir(subDir);
-            logger.info(`Successfully moved files from subdirectory`);
-          }
-        }
-      } catch (extractError) {
-        logger.error(`Failed to extract package:`, {
-          error: extractError.message,
-          packagePath,
-          problemDir,
-        });
-        throw new Error(`Failed to extract package: ${extractError.message}`);
-      }
+    if (stats.isFile()) {
+      // Extract archive
+      logger.info(`Extracting problem package: ${problemId}`);
+      const fileBuffer = await fs.readFile(packagePath);
+      await extractArchive(fileBuffer, problemDir);
     } else {
-      // Assume it's already a directory
-      logger.info(`Copying directory from ${packagePath} to ${problemDir}`);
-      await fs.cp(packagePath, problemDir, { recursive: true });
+      // Copy directory contents
+      logger.info(`Copying problem package directory: ${problemId}`);
+      await copyDirectory(packagePath, problemDir);
     }
 
-    // Validate problem structure
+    // Validate package structure
     const configPath = path.join(problemDir, "config.json");
+    const dockerfilePath = path.join(problemDir, "Dockerfile");
 
-    logger.debug(`Validating problem structure in ${problemDir}`);
-
-    const configExists = await fs
-      .access(configPath)
-      .then(() => true)
-      .catch(() => false);
-
-    // List directory contents for debugging
+    // Check for required files
     try {
-      const dirContents = await fs.readdir(problemDir);
-      logger.debug(`Problem directory contents:`, {
-        problemDir,
-        files: dirContents,
-      });
-    } catch (readError) {
-      logger.warn(`Could not read problem directory`, readError);
+      await fs.access(configPath);
+    } catch (error) {
+      throw new Error(`Problem package must contain config.json at root level`);
     }
 
-    if (!configExists) {
-      logger.error(`Missing config.json in problem package`, {
-        problemId,
-        expectedPath: configPath,
-        problemDir,
-      });
-      throw new Error("Problem package must contain config.json");
+    try {
+      await fs.access(dockerfilePath);
+    } catch (error) {
+      throw new Error(`Problem package must contain Dockerfile at root level`);
     }
 
     // Load and validate config
-    logger.info(`Loading and validating config.json`);
     const configContent = await fs.readFile(configPath, "utf8");
-    const config = JSON.parse(configContent);
+    const problemConfig = JSON.parse(configContent);
 
-    logger.debug(`Parsed config:`, { config });
-
-    // Support both snake_case (problem_id) and camelCase (problemId)
-    const configProblemId = config.problem_id || config.problemId;
-
-    if (!configProblemId || configProblemId !== problemId) {
-      logger.error(`Problem ID mismatch`, {
-        expectedId: problemId,
-        actualId: configProblemId,
-        configPath,
-        configKeys: Object.keys(config),
-      });
-      throw new Error("Problem ID in config.json does not match");
-    }
-
-    // Validate that all container Dockerfiles exist
-    if (!config.containers || !Array.isArray(config.containers)) {
-      throw new Error("config.json must contain a 'containers' array");
-    }
-
-    for (const container of config.containers) {
-      const dockerfilePath = path.join(problemDir, container.dockerfile_path);
-      const dockerfileExists = await fs
-        .access(dockerfilePath)
-        .then(() => true)
-        .catch(() => false);
-
-      if (!dockerfileExists) {
-        logger.error(`Missing Dockerfile for container`, {
-          containerId: container.container_id,
-          expectedPath: dockerfilePath,
-        });
-        throw new Error(
-          `Dockerfile not found for container '${container.container_id}' at ${container.dockerfile_path}`
-        );
-      }
-    }
-
-    logger.info(`All container Dockerfiles validated`);
-
-    // Build container images
-    logger.info(`Building images for ${config.containers.length} container(s)`);
-    const builtImages = [];
-
-    for (const container of config.containers) {
-      const containerDir = path.dirname(
-        path.join(problemDir, container.dockerfile_path)
+    // Validate config
+    if (problemConfig.problem_id !== problemId) {
+      throw new Error(
+        `Problem ID in config.json (${problemConfig.problem_id}) does not match provided ID (${problemId})`
       );
-      const dockerfileName = path.basename(container.dockerfile_path);
-
-      logger.info(`Building image for container: ${container.container_id}`, {
-        containerDir,
-        dockerfile: dockerfileName,
-      });
-
-      try {
-        const imageName = await docker.buildContainerImage(
-          problemId,
-          container.container_id,
-          containerDir,
-          {
-            dockerfile: dockerfileName,
-            ...options,
-          }
-        );
-
-        builtImages.push({
-          container_id: container.container_id,
-          image_name: imageName,
-        });
-
-        logger.info(
-          `Successfully built image for ${container.container_id}: ${imageName}`
-        );
-      } catch (buildError) {
-        logger.error(
-          `Failed to build image for container ${container.container_id}`,
-          {
-            error: buildError.message,
-          }
-        );
-        throw new Error(
-          `Failed to build image for container '${container.container_id}': ${buildError.message}`
-        );
-      }
     }
+
+    if (!problemConfig.problem_name) {
+      throw new Error("config.json must include problem_name");
+    }
+
+    if (!problemConfig.containers || !Array.isArray(problemConfig.containers)) {
+      throw new Error(
+        "config.json must include containers array (multi-container architecture required)"
+      );
+    }
+
+    // Build Docker image for the problem
+    const imageName = `problem-${problemId}:latest`;
+    logger.info(`Building Docker image for problem ${problemId}: ${imageName}`);
+
+    try {
+      await buildImage(problemDir, imageName, {
+        buildTimeout: buildTimeout || config.docker.buildTimeout,
+      });
+    } catch (error) {
+      throw new Error(`Docker build failed: ${error.message}`);
+    }
+
+    // Register problem
+    const problemData = {
+      problemId: problemConfig.problem_id,
+      problemName: problemConfig.problem_name,
+      projectType: projectType || problemConfig.project_type || "generic",
+      config: problemConfig,
+      packagePath: problemDir,
+      imageName: imageName,
+      registeredAt: new Date(),
+    };
+
+    problemsRegistry.set(problemId, problemData);
 
     logger.info(`Problem ${problemId} registered successfully`, {
       problemId,
-      images: builtImages,
+      imageName,
     });
 
     return {
-      problemId,
-      images: builtImages,
-      config,
-      registeredAt: new Date().toISOString(),
+      problemId: problemData.problemId,
+      imageName: problemData.imageName,
+      registeredAt: problemData.registeredAt,
     };
   } catch (error) {
-    logger.error(`Failed to process problem package:`, {
-      problemId,
-      packagePath,
-      problemDir,
-      error: error.message,
-      stack: error.stack,
-    });
-
-    // Cleanup on failure
-    logger.info(`Cleaning up failed problem directory: ${problemDir}`);
+    logger.error(`Error processing problem package ${problemId}:`, error);
+    // Cleanup on error
+    const problemDir = path.join(config.paths.problemsDir, problemId);
     await fs.rm(problemDir, { recursive: true, force: true }).catch(() => {});
-    throw new Error(`Failed to process problem package: ${error.message}`);
+    throw error;
   }
 }
 
 /**
  * Get problem information
+ * @param {string} problemId - Problem identifier
+ * @returns {Promise<Object|null>} Problem information or null if not found
  */
 async function getProblemInfo(problemId) {
-  const problemDir = path.join(config.paths.problemsDir, problemId);
-  const configPath = path.join(problemDir, "config.json");
+  const problem = problemsRegistry.get(problemId);
 
-  try {
-    const exists = await fs
-      .access(problemDir)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
-      return null;
-    }
-
-    const configContent = await fs.readFile(configPath, "utf8");
-    const problemConfig = JSON.parse(configContent);
-
-    return {
-      problemId,
-      ...problemConfig,
-      problemDir,
-    };
-  } catch (error) {
-    logger.error(`Error loading problem ${problemId}:`, error);
+  if (!problem) {
     return null;
   }
+
+  return {
+    problem_id: problem.problemId,
+    problem_name: problem.problemName,
+    project_type: problem.projectType,
+    version: problem.config.version || "1.0.0",
+    description: problem.config.description || "",
+    containers: problem.config.containers || [],
+    rubrics: problem.config.rubrics || [],
+    registered_at: problem.registeredAt.toISOString(),
+  };
 }
 
 /**
  * List all registered problems
+ * @returns {Promise<Array>} List of problems
  */
 async function listProblems() {
-  try {
-    const problemsDir = config.paths.problemsDir;
-    await fs.mkdir(problemsDir, { recursive: true });
+  const problems = [];
 
-    const entries = await fs.readdir(problemsDir, { withFileTypes: true });
-    const problems = [];
-
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const problemInfo = await getProblemInfo(entry.name);
-        if (problemInfo) {
-          problems.push(problemInfo);
-        }
-      }
-    }
-
-    return problems;
-  } catch (error) {
-    logger.error("Error listing problems:", error);
-    return [];
+  for (const [problemId, problem] of problemsRegistry.entries()) {
+    problems.push({
+      problemId: problem.problemId,
+      problemName: problem.problemName,
+      projectType: problem.projectType,
+      rubrics: problem.config.rubrics || [],
+      registeredAt: problem.registeredAt,
+    });
   }
+
+  return problems;
 }
 
 /**
  * Delete a problem
+ * @param {string} problemId - Problem identifier
+ * @returns {Promise<boolean>} True if deleted successfully
  */
 async function deleteProblem(problemId) {
-  const problemDir = path.join(config.paths.problemsDir, problemId);
+  const problem = problemsRegistry.get(problemId);
+
+  if (!problem) {
+    return false;
+  }
 
   try {
-    await fs.rm(problemDir, { recursive: true, force: true });
+    // Remove Docker image
+    const docker = dockerClient.getClient();
+    try {
+      const image = docker.getImage(problem.imageName);
+      await image.remove({ force: true });
+      logger.info(`Removed Docker image: ${problem.imageName}`);
+    } catch (error) {
+      logger.warn(
+        `Failed to remove Docker image ${problem.imageName}:`,
+        error.message
+      );
+    }
 
-    // Try to remove problem image
-    const imageName = `judgehost-problem-${problemId}:latest`;
-    await docker.cleanup(null, true).catch(() => {}); // Best effort
+    // Remove problem directory
+    await fs.rm(problem.packagePath, { recursive: true, force: true });
+    logger.info(`Removed problem directory: ${problem.packagePath}`);
 
-    logger.info(`Problem ${problemId} deleted`);
+    // Remove from registry
+    problemsRegistry.delete(problemId);
+
+    logger.info(`Problem ${problemId} deleted successfully`);
     return true;
   } catch (error) {
     logger.error(`Error deleting problem ${problemId}:`, error);
-    return false;
+    throw error;
+  }
+}
+
+/**
+ * Process a submission
+ * @param {Object} job - Job object from queue
+ */
+async function processSubmission(job) {
+  const { submissionId, problemId } = job;
+
+  logger.info(`Starting evaluation for submission ${submissionId}`);
+
+  // Mark job as running
+  job.start();
+
+  // Create results directory
+  const resultsDir = path.join(config.paths.resultsDir, submissionId);
+  await fs.mkdir(resultsDir, { recursive: true });
+
+  // Create artifacts directory
+  const artifactsDir = path.join(resultsDir, "artifacts");
+  await fs.mkdir(artifactsDir, { recursive: true });
+
+  // Track evaluation status
+  activeEvaluations.set(job.id, {
+    submissionId,
+    problemId,
+    state: "preparing",
+    startedAt: new Date(),
+  });
+
+  try {
+    // Get problem configuration
+    const problem = problemsRegistry.get(problemId);
+    if (!problem) {
+      throw new Error(`Problem ${problemId} not found`);
+    }
+
+    // Download/prepare submission code
+    const submissionDir = await prepareSubmission(job);
+
+    // Update evaluation status
+    activeEvaluations.set(job.id, {
+      ...activeEvaluations.get(job.id),
+      state: "running",
+      submissionDir,
+    });
+
+    // Run evaluation (this would integrate with the Docker container execution)
+    const result = await runEvaluation(job, problem, submissionDir, resultsDir);
+
+    // Save results
+    const resultsPath = path.join(resultsDir, "results.json");
+    await fs.writeFile(resultsPath, JSON.stringify(result, null, 2));
+
+    // Mark job as complete
+    job.complete(result);
+
+    logger.info(`Submission ${submissionId} completed successfully`);
+  } catch (error) {
+    logger.error(`Submission ${submissionId} failed:`, error);
+    job.fail(error);
+
+    // Save error info
+    const errorPath = path.join(resultsDir, "error.json");
+    await fs.writeFile(
+      errorPath,
+      JSON.stringify(
+        {
+          submissionId,
+          error: error.message,
+          stack: error.stack,
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+  } finally {
+    // Cleanup evaluation state
+    activeEvaluations.delete(job.id);
+  }
+}
+
+/**
+ * Prepare submission code
+ * @param {Object} job - Job object
+ * @returns {Promise<string>} Path to submission directory
+ */
+async function prepareSubmission(job) {
+  const {
+    submissionId,
+    packageType,
+    localPath,
+    gitUrl,
+    gitBranch,
+    gitCommit,
+    packageUrl,
+    archiveChecksum,
+  } = job;
+
+  const submissionDir = path.join(config.paths.submissionsDir, submissionId);
+  await fs.mkdir(submissionDir, { recursive: true });
+
+  try {
+    if (packageType === "file" && localPath) {
+      // Already extracted during upload
+      return localPath;
+    } else if (packageType === "git") {
+      // Clone Git repository
+      const simpleGit = require("simple-git");
+      const git = simpleGit();
+
+      const cloneOptions = [];
+      if (config.git.shallowClone) cloneOptions.push("--depth=1");
+      if (gitBranch) cloneOptions.push("--branch", gitBranch);
+
+      await git.clone(gitUrl, submissionDir, cloneOptions);
+
+      if (gitCommit) {
+        const repoGit = simpleGit(submissionDir);
+        await repoGit.checkout(gitCommit);
+      }
+
+      return submissionDir;
+    } else if (packageType === "url") {
+      // Download from URL
+      const downloader = require("../utils/downloader");
+      const tempPath = path.join(submissionDir, "submission.tar.gz");
+
+      if (archiveChecksum) {
+        await downloader.downloadToFile(packageUrl, tempPath, archiveChecksum);
+      } else {
+        await downloader.downloadToFile(packageUrl, tempPath);
+      }
+
+      // Extract
+      const fileBuffer = await fs.readFile(tempPath);
+      await extractArchive(fileBuffer, submissionDir);
+      await fs.rm(tempPath);
+
+      return submissionDir;
+    } else {
+      throw new Error(`Unsupported package type: ${packageType}`);
+    }
+  } catch (error) {
+    logger.error(`Error preparing submission ${submissionId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Run evaluation
+ * @param {Object} job - Job object
+ * @param {Object} problem - Problem data
+ * @param {string} submissionDir - Submission directory path
+ * @param {string} resultsDir - Results directory path
+ * @returns {Promise<Object>} Evaluation results
+ */
+async function runEvaluation(job, problem, submissionDir, resultsDir) {
+  const { submissionId } = job;
+
+  logger.info(`Running evaluation for submission ${submissionId}`);
+
+  // This is a placeholder for the actual evaluation logic
+  // The real implementation would:
+  // 1. Create containers based on problem.config.containers
+  // 2. Mount submission code and problem resources
+  // 3. Execute hooks (pre, post, periodic)
+  // 4. Collect results from rubric files
+  // 5. Calculate scores
+
+  // For now, return a mock result
+  const result = {
+    submissionId,
+    problemId: problem.problemId,
+    status: "completed",
+    evaluatedAt: new Date().toISOString(),
+    executionStatus: "success",
+    timedOut: false,
+    totalScore: 0,
+    maxScore: 100,
+    percentage: 0,
+    rubricScores: [],
+    logs: "Evaluation completed",
+    metadata: {
+      executionTime: 0,
+      memoryUsed: 0,
+    },
+  };
+
+  // Calculate scores from rubrics
+  if (problem.config.rubrics) {
+    result.maxScore = problem.config.rubrics.reduce(
+      (sum, r) => sum + (r.max_score || 0),
+      0
+    );
+
+    // Mock rubric scores
+    result.rubricScores = problem.config.rubrics.map((rubric) => ({
+      rubric_id: rubric.rubric_id,
+      rubric_name: rubric.rubric_name,
+      rubric_type: rubric.rubric_type,
+      score: 0,
+      max_score: rubric.max_score,
+      percentage: 0,
+      status: "SKIPPED",
+      message: "Evaluation not yet implemented",
+    }));
+  }
+
+  return result;
+}
+
+/**
+ * Get evaluation status
+ * @param {number} jobId - Job ID
+ * @returns {Object|null} Evaluation status or null if not found
+ */
+function getEvaluationStatus(jobId) {
+  return activeEvaluations.get(jobId) || null;
+}
+
+/**
+ * Get processor instance
+ * @returns {Object} Processor interface
+ */
+function getProcessor() {
+  return {
+    getEvaluationStatus,
+  };
+}
+
+/**
+ * Copy directory recursively
+ * @param {string} src - Source directory
+ * @param {string} dest - Destination directory
+ */
+async function copyDirectory(src, dest) {
+  await fs.mkdir(dest, { recursive: true });
+
+  const entries = await fs.readdir(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      await copyDirectory(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
+    }
   }
 }
 
 module.exports = {
-  Processor,
-  EvaluationState,
-  getProcessor,
   initializeProcessor,
   processProblemPackage,
   getProblemInfo,
   listProblems,
   deleteProblem,
+  getProcessor,
+  processSubmission,
 };
