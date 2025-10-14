@@ -1,0 +1,11 @@
+{
+  "name": "two-sum-solution-partial",
+  "version": "1.0.0",
+  "description": "Partially correct solution with code quality issues",
+  "author": "Test User",
+  "submission_metadata": {
+    "problem_id": "two-sum",
+    "language": "javascript",
+    "approach": "brute_force"
+  }
+}

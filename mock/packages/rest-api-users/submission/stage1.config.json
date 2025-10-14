@@ -1,0 +1,12 @@
+{
+  "container_id": "submission",
+  "network": {
+    "enabled": true,
+    "mode": "bridge"
+  },
+  "resource_limits": {
+    "cpu": "1.0",
+    "memory": "512M",
+    "timeout": 180
+  }
+}

@@ -18,6 +18,7 @@ const config = require("../config");
 const downloader = require("../utils/downloader");
 const docker = require("./docker");
 const { completeJob, failJob, queueEvents } = require("./queue");
+const { createMetricsOrchestrator } = require("./metricsCollector");
 
 /**
  * Evaluation states
@@ -201,6 +202,21 @@ class Processor extends EventEmitter {
 
       await docker.startContainerGroup(containerGroup);
 
+      // Step 5.5: Initialize and start metrics collection
+      logger.info(
+        `[MultiContainer] Starting metrics collection for all containers`
+      );
+      const metricsOrchestrator = createMetricsOrchestrator();
+      metricsOrchestrator.initialize(
+        job.submissionId,
+        problem.id,
+        containerGroup
+      );
+      await metricsOrchestrator.startAll();
+
+      // Store metrics orchestrator for cleanup
+      evaluationState.metricsOrchestrator = metricsOrchestrator;
+
       // Step 6: Wait for containers to complete
       logger.info(
         `[MultiContainer] Waiting for container execution to complete`
@@ -240,6 +256,14 @@ class Processor extends EventEmitter {
         combinedLogs
       );
 
+      // Step 7.5: Stop metrics collection
+      logger.info(`[MultiContainer] Stopping metrics collection`);
+      if (evaluationState.metricsOrchestrator) {
+        await evaluationState.metricsOrchestrator.stopAll();
+        await evaluationState.metricsOrchestrator.saveMetrics(resultsDir);
+        await evaluationState.metricsOrchestrator.saveTimeSeries(resultsDir);
+      }
+
       // Step 8: Collect results
       logger.info(
         `[MultiContainer] Collecting results for ${job.submissionId}`
@@ -250,6 +274,7 @@ class Processor extends EventEmitter {
         executionResults,
         containerLogs,
         containerGroup,
+        metricsOrchestrator: evaluationState.metricsOrchestrator,
       });
 
       // Step 9: Cleanup containers and network
@@ -282,6 +307,15 @@ class Processor extends EventEmitter {
         `[MultiContainer] Error processing submission ${job.submissionId}:`,
         error
       );
+
+      // Stop metrics collection if started
+      if (evaluationState.metricsOrchestrator) {
+        try {
+          await evaluationState.metricsOrchestrator.stopAll();
+        } catch (metricsError) {
+          logger.warn("Failed to stop metrics collection:", metricsError);
+        }
+      }
 
       // Cleanup on failure
       if (containerGroup) {
@@ -557,15 +591,14 @@ class Processor extends EventEmitter {
    * Collect evaluation results from output directory
    */
   async collectResults(job, problem, resultsDir, executionResult) {
-    const rubricUtils = require("../utils/rubrics");
+    const rubricEvaluator = require("./rubricEvaluator");
 
     const results = {
       submissionId: job.submissionId,
       problemId: job.problemId,
       teamId: job.teamId,
       evaluatedAt: new Date().toISOString(),
-      evaluation_status:
-        executionResult.statusCode === 0 ? "success" : "failed",
+      execution_status: executionResult.statusCode === 0 ? "success" : "failed",
       executionStatus: executionResult.statusCode === 0 ? "success" : "failed", // Alias
       timedOut: executionResult.timedOut || false,
       rubricScores: [],
@@ -577,44 +610,59 @@ class Processor extends EventEmitter {
     };
 
     try {
-      // Find all rubric JSON files
-      const allFiles = await fs.readdir(resultsDir);
-      const rubricFiles = allFiles
-        .filter((f) => f.startsWith("rubric_") && f.endsWith(".json"))
-        .map((f) => path.join(resultsDir, f));
+      // Collect rubric evaluations using the new rubric evaluator
+      const containers = executionResult.containerGroup?.containers || [];
+      const rubricEvaluation = await rubricEvaluator.collectRubricEvaluations(
+        resultsDir,
+        containers,
+        problem
+      );
 
-      logger.info(`Found ${rubricFiles.length} rubric result file(s)`);
+      // Map to results format
+      results.rubricScores = rubricEvaluation.rubric_results;
+      results.totalScore = rubricEvaluation.total_score;
+      results.maxScore = rubricEvaluation.max_score;
+      results.percentage = rubricEvaluation.percentage;
 
-      if (rubricFiles.length > 0) {
-        // Process rubric files with validation
-        const { rubrics, errors } = await rubricUtils.processRubricFiles(
-          rubricFiles,
-          problem
+      // Add container-specific results
+      results.containers_results = rubricEvaluation.rubrics_by_container;
+
+      // Add evaluation errors if any
+      if (rubricEvaluation.evaluation_errors.length > 0) {
+        logger.warn(
+          `Rubric evaluation had ${rubricEvaluation.evaluation_errors.length} error(s)`
         );
+        results.rubric_errors = rubricEvaluation.evaluation_errors;
+      }
 
-        if (errors.length > 0) {
-          logger.warn(`Rubric processing had ${errors.length} error(s)`);
-          results.rubric_errors = errors;
-        }
+      // Generate feedback summary
+      results.feedback = rubricEvaluator.generateFeedbackSummary(
+        rubricEvaluation.rubric_results
+      );
 
-        // Aggregate results
-        const overall = rubricUtils.aggregateRubrics(rubrics, problem);
+      // Overall result
+      results.overall_result = {
+        passed: rubricEvaluation.percentage >= 50, // Pass threshold
+        total_score: rubricEvaluation.total_score,
+        max_score: rubricEvaluation.max_score,
+        percentage: rubricEvaluation.percentage,
+      };
 
-        results.rubricScores = overall.rubric_scores;
-        results.totalScore = overall.total_score;
-        results.maxScore = overall.max_score;
-        results.percentage = overall.percentage;
-        results.overall_result = {
-          passed: overall.passed,
-          total_score: overall.total_score,
-          max_score: overall.max_score,
-          percentage: overall.percentage,
-          grade: overall.grade,
-          verdict: overall.verdict,
-        };
-      } else {
-        logger.warn("No rubric results found");
-        results.warning = "No rubric results generated by evaluation";
+      logger.info(
+        `Rubric evaluation complete: ${results.totalScore}/${results.maxScore} (${results.percentage}%)`
+      );
+
+      // Add metrics if available
+      if (executionResult.metricsOrchestrator) {
+        const metricsReport =
+          executionResult.metricsOrchestrator.generateReport();
+        results.metrics = metricsReport;
+        results.execution_time_seconds = metricsReport.execution_time_seconds;
+        results.resource_usage = metricsReport.total_resource_usage;
+        results.containers_metrics = metricsReport.containers_summary;
+        logger.info(
+          `Metrics collected: ${metricsReport.containers_summary.length} containers, ${metricsReport.execution_time_seconds}s execution time`
+        );
       }
 
       // Collect execution metadata
