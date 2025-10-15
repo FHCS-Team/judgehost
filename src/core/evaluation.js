@@ -216,7 +216,7 @@ async function buildContainerImages(problemId, problemPath, containers) {
 
     logger.info(`Building image: ${imageName} from ${dockerfilePath}`);
 
-    const imageId = await buildImage(contextPath, dockerfilePath, imageName);
+    const imageId = await buildImage(contextPath, imageName);
     imageCache.set(cacheKey, imageId);
 
     logger.info(`Built image: ${imageName} (${imageId.substring(0, 12)})`);
@@ -293,11 +293,10 @@ async function startContainersInOrder(
     // Load stage2 config for runtime settings
     const stageConfig = await loadStageConfig(problemPath, container_id, 2);
 
-    // Create container
-    const container = await dockerClient.createContainer({
+    // Build container config
+    const createConfig = {
       name: containerName,
       Image: imageName,
-      Cmd: ["sleep", "infinity"], // Keep container alive
       HostConfig: {
         Mounts: mounts,
         NetworkMode: networkName,
@@ -315,7 +314,26 @@ async function startContainersInOrder(
       Env: Object.entries(stageConfig.environment || {}).map(
         ([k, v]) => `${k}=${v}`
       ),
-    });
+    };
+
+    // Add healthcheck if defined
+    if (stageConfig.health_check) {
+      const hc = stageConfig.health_check;
+      createConfig.Healthcheck = {
+        Test: ["CMD-SHELL", hc.command],
+        Interval: (hc.interval || 30) * 1e9, // Convert to nanoseconds
+        Timeout: (hc.timeout || 30) * 1e9,
+        Retries: hc.retries || 3,
+        StartPeriod: (hc.start_period || 0) * 1e9,
+      };
+    } else {
+      // If no health check, keep container alive with sleep infinity
+      // This is needed for containers that don't have a long-running service
+      createConfig.Cmd = ["sleep", "infinity"];
+    }
+
+    // Create container
+    const container = await dockerClient.createContainer(createConfig);
 
     await container.start();
     logger.info(`Container started: ${containerName}`);
@@ -326,7 +344,23 @@ async function startContainersInOrder(
       config: containerConfig,
     });
 
-    // Execute pre-hooks
+    // Wait for container's own health check if defined
+    if (stageConfig.health_check) {
+      logger.info(`Waiting for container health check: ${container_id}`);
+      const healthy = await waitForHealthy(containerName, {
+        timeout:
+          stageConfig.health_check.start_period +
+            stageConfig.health_check.retries *
+              stageConfig.health_check.interval || 60,
+        interval: stageConfig.health_check.interval || 2,
+      });
+
+      if (!healthy) {
+        throw new Error(`Container failed health check: ${container_id}`);
+      }
+    }
+
+    // Execute pre-hooks (after container is healthy)
     const hooksPath = path.join(problemPath, container_id, "hooks");
     const preHooks = await listHooks(hooksPath, "pre");
 

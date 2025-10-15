@@ -228,7 +228,7 @@ else
     print_success "Output directory exists"
     
     # Check rubric files
-    EXPECTED_RUBRICS=("rubric_correctness.json" "rubric_latency.json" "rubric_concurrency.json" "rubric_storage.json")
+    EXPECTED_RUBRICS=("rubric_correctness.json" "rubric_latency.json" "rubric_concurrency.json" "rubric_resource_efficiency.json")
     
     for rubric_file in "${EXPECTED_RUBRICS[@]}"; do
         RUBRIC_PATH="$OUTPUT_DIR/$rubric_file"
