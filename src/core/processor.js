@@ -495,7 +495,7 @@ async function prepareSubmission(job) {
 }
 
 /**
- * Run evaluation
+ * Run evaluation using the new evaluation module
  * @param {Object} job - Job object
  * @param {Object} problem - Problem data
  * @param {string} submissionDir - Submission directory path
@@ -504,127 +504,46 @@ async function prepareSubmission(job) {
  */
 async function runEvaluation(job, problem, submissionDir, resultsDir) {
   const { submissionId } = job;
-  const { createContainerGroup } = require("./docker/group");
-  const { createNetwork } = require("./docker/network");
+  const { runEvaluation: runEval } = require("./evaluation");
 
   logger.info(`Running evaluation for submission ${submissionId}`);
 
   const startTime = Date.now();
-  let networkId = null;
-  let containerGroup = null;
 
   try {
-    // Create network if specified
-    if (problem.config.network) {
-      const networkName = problem.config.network.name.replace(
-        "{{submission_id}}",
-        submissionId
-      );
-      const internetAccess = problem.config.network.internet_access !== false;
-
-      logger.info(
-        `Creating network ${networkName} for submission ${submissionId}`
-      );
-      networkId = await createNetwork(networkName, {
-        internal: !internetAccess,
-        labels: {
-          submission_id: submissionId,
-          problem_id: problem.problemId,
-        },
-      });
-    }
-
-    // Prepare container configurations
-    const containers = problem.config.containers.map((containerConfig) => {
-      const imageName =
-        containerConfig.image_name ||
-        problem.imageNames[containerConfig.container_id];
-
-      return {
-        containerId: containerConfig.container_id,
-        imageName: imageName,
-        stages: containerConfig.stages || [],
-        acceptsSubmission: containerConfig.accepts_submission || false,
-        submissionPackageId: containerConfig.submission_package_id,
-      };
-    });
-
-    // Create container group
-    logger.info(`Creating container group for submission ${submissionId}`);
-    containerGroup = await createContainerGroup({
-      submissionId,
+    // Run evaluation using the new module
+    const evalResult = await runEval({
       problemId: problem.problemId,
+      submissionId: submissionId,
+      resultId: `result-${submissionId}-${Date.now()}`,
       problemPath: problem.packagePath,
       submissionPath: submissionDir,
-      resultsPath: resultsDir,
-      containers,
-      networkId,
-      timeout: problem.config.timeout || 1800,
+      resultPath: resultsDir,
     });
 
-    // Execute all stages
-    logger.info(`Executing evaluation stages for submission ${submissionId}`);
-    await containerGroup.executeAll();
+    // Transform to expected format
+    const rubricScores = evalResult.rubrics.map((rubric) => ({
+      rubric_id: rubric.rubric_id,
+      rubric_name: rubric.name,
+      rubric_type: rubric.type,
+      score: rubric.score,
+      max_score: rubric.max_score,
+      percentage: (rubric.score / rubric.max_score) * 100,
+      status: rubric.status.toUpperCase(),
+      message: rubric.message,
+      details: rubric.details,
+    }));
 
-    // Collect rubric results
-    const rubricScores = [];
-    let totalScore = 0;
-    let maxScore = 0;
-
-    if (problem.config.rubrics) {
-      maxScore = problem.config.rubrics.reduce(
-        (sum, r) => sum + (r.max_score || 0),
-        0
-      );
-
-      for (const rubric of problem.config.rubrics) {
-        const rubricFile = path.join(
-          resultsDir,
-          `rubric_${rubric.rubric_id}.json`
-        );
-
-        try {
-          const rubricData = JSON.parse(await fs.readFile(rubricFile, "utf8"));
-
-          rubricScores.push({
-            rubric_id: rubric.rubric_id,
-            rubric_name: rubric.name,
-            rubric_type: rubric.type,
-            score: rubricData.score || 0,
-            max_score: rubric.max_score,
-            percentage: ((rubricData.score || 0) / rubric.max_score) * 100,
-            status: rubricData.status || "DONE",
-            message: rubricData.message || "",
-            details: rubricData.details || {},
-          });
-
-          totalScore += rubricData.score || 0;
-        } catch (error) {
-          logger.warn(
-            `Failed to read rubric ${rubric.rubric_id}: ${error.message}`
-          );
-          rubricScores.push({
-            rubric_id: rubric.rubric_id,
-            rubric_name: rubric.name,
-            rubric_type: rubric.type,
-            score: 0,
-            max_score: rubric.max_score,
-            percentage: 0,
-            status: "ERROR",
-            message: `Failed to read rubric file: ${error.message}`,
-          });
-        }
-      }
-    }
-
+    const totalScore = rubricScores.reduce((sum, r) => sum + r.score, 0);
+    const maxScore = rubricScores.reduce((sum, r) => sum + r.max_score, 0);
     const executionTime = Date.now() - startTime;
 
     const result = {
       submissionId,
       problemId: problem.problemId,
-      status: "completed",
+      status: evalResult.status,
       evaluatedAt: new Date().toISOString(),
-      executionStatus: "success",
+      executionStatus: evalResult.status === "completed" ? "success" : "error",
       timedOut: false,
       totalScore,
       maxScore,
@@ -634,6 +553,7 @@ async function runEvaluation(job, problem, submissionDir, resultsDir) {
       metadata: {
         executionTime,
         memoryUsed: 0, // TODO: collect from container stats
+        error: evalResult.error,
       },
     };
 
@@ -662,26 +582,6 @@ async function runEvaluation(job, problem, submissionDir, resultsDir) {
         error: error.message,
       },
     };
-  } finally {
-    // Cleanup
-    if (containerGroup) {
-      try {
-        await containerGroup.cleanup();
-      } catch (error) {
-        logger.warn(`Cleanup failed: ${error.message}`);
-      }
-    }
-
-    if (networkId) {
-      try {
-        const docker = require("./docker/client");
-        const network = docker.getNetwork(networkId);
-        await network.remove();
-        logger.info(`Network ${networkId} removed`);
-      } catch (error) {
-        logger.warn(`Failed to remove network ${networkId}: ${error.message}`);
-      }
-    }
   }
 }
 
