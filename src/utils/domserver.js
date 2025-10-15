@@ -147,6 +147,7 @@ async function submitResult(result, judgeTaskId = null) {
     // Calculate total scores
     const totalScore = rubrics.reduce((sum, r) => sum + (r.score || 0), 0);
     const maxScore = rubrics.reduce((sum, r) => sum + (r.max_score || 0), 0);
+    const overallPercentage = maxScore > 0 ? (totalScore / maxScore) * 100 : 0;
 
     // Build artifacts URLs
     const artifactsUrls = {};
@@ -164,12 +165,17 @@ async function submitResult(result, judgeTaskId = null) {
       started_at: start_time,
       completed_at: end_time,
       execution_time_seconds: executionTimeSeconds,
+      total_score: totalScore,
+      max_score: maxScore,
+      percentage: overallPercentage,
       rubrics: rubrics.map((r) => ({
         rubric_id: r.rubric_id,
         name: r.name,
-        rubric_type: r.type,
+        rubric_type: r.rubric_type,
         score: r.score || 0,
         max_score: r.max_score,
+        percentage:
+          r.percentage || (r.max_score > 0 ? (r.score / r.max_score) * 100 : 0),
         status: r.status || "DONE",
         message: r.message || "",
         details: r.details || {},
@@ -211,6 +217,17 @@ async function submitResult(result, judgeTaskId = null) {
       status,
       totalScore,
       maxScore,
+      percentage: overallPercentage.toFixed(2),
+      rubrics_count: rubrics.length,
+      rubrics: rubrics.map((r) => ({
+        id: r.rubric_id,
+        name: r.name,
+        score: r.score,
+        max: r.max_score,
+        pct:
+          r.percentage ||
+          (r.max_score > 0 ? ((r.score / r.max_score) * 100).toFixed(2) : 0),
+      })),
     });
 
     // Submit with retry logic
