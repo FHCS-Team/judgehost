@@ -125,6 +125,37 @@ const config = {
     authToken: process.env.API_AUTH_TOKEN,
   },
 
+  // DOMserver configuration for result submission
+  domserver: {
+    enabled: process.env.DOMSERVER_ENABLED === "true",
+    url: process.env.DOMSERVER_URL || "",
+    apiVersion: process.env.DOMSERVER_API_VERSION || "v4",
+    username: process.env.DOMSERVER_USERNAME || "",
+    password: process.env.DOMSERVER_PASSWORD || "",
+    hostname: process.env.JUDGEHOST_HOSTNAME || require("os").hostname(),
+
+    // Result submission settings
+    submitResults: process.env.DOMSERVER_SUBMIT_RESULTS !== "false",
+    submitOnComplete: process.env.DOMSERVER_SUBMIT_ON_COMPLETE !== "false",
+
+    // Retry settings
+    retryEnabled: process.env.DOMSERVER_RETRY_ENABLED !== "false",
+    retryMaxAttempts: parseInt(
+      process.env.DOMSERVER_RETRY_MAX_ATTEMPTS || "3",
+      10
+    ),
+    retryDelayMs: parseInt(process.env.DOMSERVER_RETRY_DELAY_MS || "1000", 10),
+    retryBackoffMultiplier: parseFloat(
+      process.env.DOMSERVER_RETRY_BACKOFF_MULTIPLIER || "2.0"
+    ),
+
+    // Timeout settings
+    timeoutMs: parseInt(process.env.DOMSERVER_TIMEOUT_MS || "30000", 10),
+
+    // Public URL for this judgehost (for logs/artifacts URLs)
+    publicUrl: process.env.JUDGEHOST_PUBLIC_URL || "",
+  },
+
   // Security
   security: {
     containerProfile: process.env.CONTAINER_SECURITY_PROFILE || "restricted",

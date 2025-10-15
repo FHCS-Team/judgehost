@@ -368,7 +368,7 @@ fi
 print_header "Phase 10: Verify Output Files and Evaluation Results"
 
 # Check if output files exist
-EXPECTED_OUTPUTS=("rubric_correctness.json" "rubric_latency.json" "rubric_concurrency.json" "rubric_resource_efficiency.json")
+EXPECTED_OUTPUTS=("rubric_correctness.json" "rubric_query_latency.json" "rubric_concurrency.json" "rubric_resource_efficiency.json")
 OPTIONAL_OUTPUTS=()
 
 echo ""

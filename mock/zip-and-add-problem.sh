@@ -88,6 +88,7 @@ HTTP_CODE=$(curl -s -o "$TEMP_DIR/response.json" -w "%{http_code}" \
   -F "problem_id=$PROBLEM_ID" \
   -F "problem_name=$PROBLEM_NAME" \
   -F "package_type=file" \
+  -F "force_rebuild=true" \
   -F "problem_package=@$TEMP_ARCHIVE")
 
 echo "HTTP Status Code: $HTTP_CODE"

@@ -11,6 +11,7 @@ const { getQueue, Priority } = require("./queue");
 const dockerClient = require("./docker/client");
 const { buildImage } = require("./docker/image");
 const { extractArchive } = require("../utils/downloader");
+const domserver = require("../utils/domserver");
 
 // In-memory storage for problem metadata
 const problemsRegistry = new Map();
@@ -385,6 +386,59 @@ async function processSubmission(job) {
     // Save results
     const resultsPath = path.join(resultsDir, "results.json");
     await fs.writeFile(resultsPath, JSON.stringify(result, null, 2));
+
+    // Submit results to DOMserver if enabled
+    if (config.domserver.enabled && config.domserver.submitOnComplete) {
+      logger.info(`Submitting results to DOMserver for ${submissionId}`);
+
+      try {
+        const domserverResult = await domserver.submitResult(
+          {
+            submission_id: submissionId,
+            problem_id: problemId,
+            problem_config: problem.config,
+            status: result.status,
+            start_time: activeEvaluations.get(jobId).startedAt.toISOString(),
+            end_time: new Date().toISOString(),
+            rubrics: result.rubricScores.map((r) => ({
+              rubric_id: r.rubric_id,
+              name: r.rubric_name,
+              type: r.rubric_type,
+              score: r.score,
+              max_score: r.max_score,
+              status: r.status,
+              message: r.message,
+              details: r.details,
+            })),
+            metrics: result.metadata,
+            error: result.status === "failed" ? result.metadata?.error : null,
+          },
+          job.judgeTaskId
+        );
+
+        if (domserverResult.success) {
+          logger.info(`Results submitted to DOMserver successfully`, {
+            submission_id: submissionId,
+            result_id: domserverResult.result_id,
+          });
+
+          // Store DOMserver result ID
+          result.domserver_result_id = domserverResult.result_id;
+          await fs.writeFile(resultsPath, JSON.stringify(result, null, 2));
+        } else {
+          logger.warn(`Failed to submit results to DOMserver`, {
+            submission_id: submissionId,
+            reason: domserverResult.reason || domserverResult.error,
+          });
+        }
+      } catch (domserverError) {
+        logger.error(`Error submitting results to DOMserver`, {
+          submission_id: submissionId,
+          error: domserverError.message,
+        });
+        // Don't fail the job if DOMserver submission fails
+      }
+    }
 
     // Mark job as complete
     queue.completeJob(jobId, result);

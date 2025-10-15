@@ -111,7 +111,7 @@ else
     final_latency_score=0
 fi
 
-cat > /out/rubric_latency.json <<EOF
+cat > /out/rubric_query_latency.json <<EOF
 {
   "rubric_id": "query_latency",
   "rubric_type": "performance_benchmark",

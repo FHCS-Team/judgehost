@@ -364,4 +364,124 @@ router.get("/:submission_id/rubric/:rubric_id", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/results/:submission_id/logs/:container_id
+ * Get logs for a specific container
+ */
+router.get("/:submission_id/logs/:container_id", async (req, res) => {
+  try {
+    const { submission_id, container_id } = req.params;
+    const { format = "json" } = req.query;
+
+    const logsDir = path.join(config.paths.resultsDir, submission_id, "logs");
+    const logFile = path.join(logsDir, `${container_id}.log`);
+
+    try {
+      const logContent = await fs.readFile(logFile, "utf8");
+
+      if (format === "json") {
+        res.json({
+          success: true,
+          data: {
+            submission_id,
+            container_id,
+            log: logContent,
+            log_size_bytes: Buffer.byteLength(logContent, "utf8"),
+            generated_at: new Date().toISOString(),
+          },
+        });
+      } else {
+        // Return as plain text
+        res.type("text/plain");
+        res.send(logContent);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return res.status(404).json({
+          success: false,
+          error: "log_not_found",
+          message: `Log for container ${container_id} in submission ${submission_id} not found`,
+        });
+      }
+      throw error;
+    }
+  } catch (error) {
+    logger.error("Error getting container logs:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "get_container_logs_failed",
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * GET /api/results/:submission_id/metrics
+ * Get evaluation metrics
+ */
+router.get("/:submission_id/metrics", async (req, res) => {
+  try {
+    const { submission_id } = req.params;
+
+    const metricsPath = path.join(
+      config.paths.resultsDir,
+      submission_id,
+      "shared",
+      "migration_metrics.json"
+    );
+
+    try {
+      const metricsContent = await fs.readFile(metricsPath, "utf8");
+      const metrics = JSON.parse(metricsContent);
+
+      res.json({
+        success: true,
+        data: {
+          submission_id,
+          metrics,
+        },
+      });
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        // Try to get metrics from results.json
+        const resultsPath = path.join(
+          config.paths.resultsDir,
+          submission_id,
+          "results.json"
+        );
+
+        try {
+          const resultsContent = await fs.readFile(resultsPath, "utf8");
+          const results = JSON.parse(resultsContent);
+
+          res.json({
+            success: true,
+            data: {
+              submission_id,
+              metrics: results.metadata || {},
+            },
+          });
+        } catch (resultsError) {
+          return res.status(404).json({
+            success: false,
+            error: "metrics_not_found",
+            message: `Metrics for submission ${submission_id} not found`,
+          });
+        }
+      } else {
+        throw error;
+      }
+    }
+  } catch (error) {
+    logger.error("Error getting metrics:", error);
+
+    res.status(500).json({
+      success: false,
+      error: "get_metrics_failed",
+      message: error.message,
+    });
+  }
+});
+
 module.exports = router;
