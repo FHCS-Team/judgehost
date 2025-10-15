@@ -1,8 +1,51 @@
 # Container Configuration Guide
 
-**Last Updated:** October 14, 2025
+**Last Updated:** October 15, 2025
 
 This document provides comprehensive guidance on configuring problem packages, including container-specific configurations, staging behavior, and resource limits.
+
+---
+
+## Container Execution Model
+
+**CRITICAL CONCEPT: Containers created by judgehost do not execute their work autonomously.**
+
+### How Containers Actually Work
+
+1. **Container Creation**: Judgehost builds and creates containers with mounted resources
+2. **Container Start**: Containers start (may run services, entrypoints, or idle)
+3. **Command Execution**: Judgehost executes commands inside containers using `docker exec`
+4. **Hook Orchestration**: Evaluation logic runs via hooks passed as commands from judgehost
+
+**Containers are execution environments, not autonomous agents.** The judgehost orchestrator:
+
+- Controls **when** hooks execute
+- Determines **which** commands to run
+- Manages **how** containers interact
+- Coordinates **lifecycle** and dependencies
+
+**Example Flow:**
+
+```
+┌─────────────────────────────────────────────────┐
+│ Judgehost Orchestrator                          │
+├─────────────────────────────────────────────────┤
+│ 1. Build container images                       │
+│ 2. Create containers with mounts                │
+│ 3. Start containers (idle or service)           │
+│ 4. Execute: docker exec <id> /hooks/pre/01.sh   │
+│ 5. Execute: docker exec <id> /hooks/post/01.sh  │
+│ 6. Collect results from /out                    │
+│ 7. Stop and cleanup containers                  │
+└─────────────────────────────────────────────────┘
+```
+
+**What this means for problem design:**
+
+- Don't expect containers to "do work" on their own
+- Design hooks that will be executed by judgehost
+- Use Dockerfiles to set up the environment, not the evaluation logic
+- The CMD/ENTRYPOINT should start services or idle, not run tests
 
 ---
 

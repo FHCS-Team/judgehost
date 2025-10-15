@@ -55,6 +55,24 @@ Welcome to the Judgehost documentation. This directory contains comprehensive gu
 
 ## Key Concepts
 
+### Container Execution Model
+
+**IMPORTANT: Containers created by judgehost do not execute their work autonomously.**
+
+The judgehost uses an **orchestrated execution model**:
+
+1. **Containers are environments**: They provide the runtime context (Node.js, Python, databases, etc.)
+2. **Judgehost is the orchestrator**: It controls what runs inside containers and when
+3. **Hooks are commands**: Evaluation logic is executed via `docker exec` commands from judgehost
+4. **Commands are passed from build functions**: The orchestrator determines which scripts to run
+
+**What this means:**
+
+- Containers don't "do work" on their own - they wait for commands
+- Hooks don't run automatically - judgehost executes them at specific lifecycle points
+- The CMD/ENTRYPOINT should start services or idle, not run evaluation logic
+- All evaluation coordination happens externally via the judgehost orchestrator
+
 ### Multi-Container Architecture
 
 Problems can define multiple containers for evaluation:
@@ -101,10 +119,16 @@ Problem packages include:
 
 - **Global config**: Multi-container setup and dependencies
 - **Per-container configs**: Each container's Dockerfile and resources
-- **Hooks**: Evaluation scripts (executed outside containers via docker exec)
-- **Tools**: Helper scripts (executed inside containers via entrypoint.sh)
+- **Hooks**: Evaluation scripts executed by judgehost via `docker exec` (orchestrator-controlled)
+- **Tools**: Helper scripts executed inside containers via entrypoint.sh (container-internal)
 - **Data**: Test cases, fixtures, expected outputs
 - **Resources**: Utilities, validators, configurations
+
+**Critical distinction:**
+
+- **Hooks**: Executed **BY** judgehost using `docker exec` - external orchestration
+- **Tools**: Executed **INSIDE** containers - internal utilities
+- **Entrypoints**: Run when container starts - services or idle processes
 
 See [Problem Resources](data-models/containers/resources.md) for mounting details.
 

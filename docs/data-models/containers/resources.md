@@ -15,7 +15,7 @@ This document explains how problem resources (hooks, data, test files) are inclu
 
 Problem packages contain resources that need to be available during evaluation:
 
-- **Hooks**: Scripts for evaluation logic (pre, post, periodic) - **Executed outside containers via docker exec**
+- **Hooks**: Scripts for evaluation logic (pre, post, periodic) - **Executed by judgehost via `docker exec` commands**
 - **Tools**: Helper scripts and utilities
 - **Data**: Test data, expected outputs, validation files, schemas, configs, utilities
 
@@ -23,23 +23,72 @@ These resources are mounted into containers at specific paths, making them acces
 
 ---
 
+## Container Execution Model
+
+**IMPORTANT: Containers created by judgehost do not execute their work autonomously.**
+
+Instead, the judgehost orchestrator:
+
+1. **Creates containers** with all necessary resources mounted
+2. **Starts containers** (which may run as idle services or execute entrypoints)
+3. **Executes commands** inside running containers using `docker exec`
+4. **Coordinates execution** by passing hook scripts and commands from the build/evaluation functions
+
+**The actual evaluation work is performed by:**
+
+- Hook scripts executed via `docker exec` commands from the judgehost
+- Commands passed by the orchestrator during container creation
+- Entrypoints defined in Dockerfiles (for long-running services)
+
+**Containers are execution environments, not autonomous workers.** The judgehost controls what runs inside them.
+
+---
+
 ## Hook vs Tool Execution
 
-### Hooks (External Execution)
+## Hook vs Tool Execution
 
-**Hooks are executed OUTSIDE containers using `docker exec` remote calls:**
+### Hooks (Orchestrator-Controlled Execution)
 
-- Invoked by the judgehost orchestrator
-- Run as separate `docker exec` commands
-- Have access to docker API and orchestration layer
-- Can manage container lifecycle
-- Execute in the judgehost environment
+**Hooks are executed BY THE JUDGEHOST ORCHESTRATOR using `docker exec` commands:**
 
-**Example hook execution:**
+- **Not autonomous**: Hooks don't run automatically inside containers
+- **Externally triggered**: Invoked by the judgehost orchestrator at specific lifecycle points
+- **Executed via `docker exec`**: Run as separate remote commands in running containers
+- **Orchestrated**: The judgehost determines when and how hooks execute
+- **Controlled workflow**: Execution order is managed by the evaluation pipeline
 
-```bash
-docker exec <container_id> /hooks/post/01_test_api.sh
+**Example hook execution flow:**
+
+```javascript
+// Judgehost orchestrator code (simplified)
+const container = docker.getContainer(containerId);
+
+// 1. Start the container (may just idle or run a service)
+await container.start();
+
+// 2. Judgehost executes pre-hooks via docker exec
+const preExec = await container.exec({
+  Cmd: ["sh", "/hooks/pre/01_setup.sh"],
+  AttachStdout: true,
+  AttachStderr: true,
+});
+await preExec.start();
+
+// 3. Judgehost executes post-hooks via docker exec
+const postExec = await container.exec({
+  Cmd: ["sh", "/hooks/post/01_test_api.sh"],
+  AttachStdout: true,
+  AttachStderr: true,
+});
+await postExec.start();
 ```
+
+**What this means:**
+
+- Containers provide the **execution environment**
+- Judgehost provides the **execution logic** (which hooks to run, when, and how)
+- Hooks are **commands passed to containers**, not code that runs independently
 
 ### Tools (Internal Execution)
 
@@ -47,7 +96,8 @@ docker exec <container_id> /hooks/post/01_test_api.sh
 
 - Custom scripts specific to the problem
 - Copied into image during build (Stage 1)
-- Can be called by hooks or entrypoint
+- Can be called by hooks, entrypoints, or manually
+- Part of the container image itself
 
 **Execution context:**
 
@@ -64,6 +114,16 @@ COPY tools/ /tools/problem/
 # Tools can be used in entrypoint or called from hooks
 ENTRYPOINT ["/tools/downloader.sh"]
 ```
+
+**Comparison:**
+
+| Aspect          | Hooks                                    | Tools                              |
+| --------------- | ---------------------------------------- | ---------------------------------- |
+| **Executed by** | Judgehost orchestrator via `docker exec` | Container processes or entrypoints |
+| **Trigger**     | External (judgehost decides when)        | Internal (container decides when)  |
+| **Purpose**     | Evaluation orchestration and testing     | Problem-specific utilities         |
+| **Location**    | Mounted at `/hooks/`                     | Copied into image at build time    |
+| **Autonomy**    | No - controlled by judgehost             | Yes - part of container logic      |
 
 ---
 

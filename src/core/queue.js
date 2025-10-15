@@ -133,6 +133,10 @@ class Queue extends EventEmitter {
       gitCommit: submission.gitCommit,
       packageUrl: submission.packageUrl,
       archiveChecksum: submission.archiveChecksum,
+      // Local file path for uploaded submissions (if any)
+      localPath: submission.localPath,
+      // For multi-package submissions, include packages array
+      packages: submission.packages,
 
       // Metadata
       metadata: submission.metadata || {},

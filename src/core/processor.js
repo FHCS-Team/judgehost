@@ -31,15 +31,22 @@ function initializeProcessor() {
 
   // Start processing queue
   const queue = getQueue();
-  queue.on("job-ready", async (job) => {
+  queue.on("job:started", async (job) => {
     try {
       logger.info(
         `Processing job ${job.id} for submission ${job.submissionId}`
       );
       await processSubmission(job);
     } catch (error) {
-      logger.error(`Error processing job ${job.id}:`, error);
-      job.fail(error);
+      logger.error(`Error processing job ${job.id}:`, {
+        message: error?.message || "Unknown error",
+        stack: error?.stack,
+        errorType: typeof error,
+        errorKeys: error ? Object.keys(error) : [],
+        errorString: String(error),
+        fullError: error,
+      });
+      queue.failJob(job.id, error);
     }
   });
 
@@ -334,12 +341,10 @@ async function deleteProblem(problemId) {
  * @param {Object} job - Job object from queue
  */
 async function processSubmission(job) {
-  const { submissionId, problemId } = job;
+  const { submissionId, problemId, id: jobId } = job;
+  const queue = getQueue();
 
   logger.info(`Starting evaluation for submission ${submissionId}`);
-
-  // Mark job as running
-  job.start();
 
   // Create results directory
   const resultsDir = path.join(config.paths.resultsDir, submissionId);
@@ -350,7 +355,7 @@ async function processSubmission(job) {
   await fs.mkdir(artifactsDir, { recursive: true });
 
   // Track evaluation status
-  activeEvaluations.set(job.id, {
+  activeEvaluations.set(jobId, {
     submissionId,
     problemId,
     state: "preparing",
@@ -368,8 +373,8 @@ async function processSubmission(job) {
     const submissionDir = await prepareSubmission(job);
 
     // Update evaluation status
-    activeEvaluations.set(job.id, {
-      ...activeEvaluations.get(job.id),
+    activeEvaluations.set(jobId, {
+      ...activeEvaluations.get(jobId),
       state: "running",
       submissionDir,
     });
@@ -382,12 +387,16 @@ async function processSubmission(job) {
     await fs.writeFile(resultsPath, JSON.stringify(result, null, 2));
 
     // Mark job as complete
-    job.complete(result);
+    queue.completeJob(jobId, result);
 
     logger.info(`Submission ${submissionId} completed successfully`);
   } catch (error) {
-    logger.error(`Submission ${submissionId} failed:`, error);
-    job.fail(error);
+    logger.error(`Submission ${submissionId} failed:`, {
+      message: error.message,
+      stack: error.stack,
+      error: error,
+    });
+    queue.failJob(jobId, error);
 
     // Save error info
     const errorPath = path.join(resultsDir, "error.json");
@@ -406,7 +415,7 @@ async function processSubmission(job) {
     );
   } finally {
     // Cleanup evaluation state
-    activeEvaluations.delete(job.id);
+    activeEvaluations.delete(jobId);
   }
 }
 
@@ -427,12 +436,20 @@ async function prepareSubmission(job) {
     archiveChecksum,
   } = job;
 
+  logger.info(`Preparing submission ${submissionId}:`, {
+    packageType,
+    localPath,
+    hasGitUrl: !!gitUrl,
+    hasPackageUrl: !!packageUrl,
+  });
+
   const submissionDir = path.join(config.paths.submissionsDir, submissionId);
   await fs.mkdir(submissionDir, { recursive: true });
 
   try {
     if (packageType === "file" && localPath) {
       // Already extracted during upload
+      logger.info(`Using pre-extracted submission at: ${localPath}`);
       return localPath;
     } else if (packageType === "git") {
       // Clone Git repository
@@ -487,57 +504,210 @@ async function prepareSubmission(job) {
  */
 async function runEvaluation(job, problem, submissionDir, resultsDir) {
   const { submissionId } = job;
+  const { createContainerGroup } = require("./docker/group");
+  const { createNetwork } = require("./docker/network");
 
   logger.info(`Running evaluation for submission ${submissionId}`);
 
-  // This is a placeholder for the actual evaluation logic
-  // The real implementation would:
-  // 1. Create containers based on problem.config.containers
-  // 2. Mount submission code and problem resources
-  // 3. Execute hooks (pre, post, periodic)
-  // 4. Collect results from rubric files
-  // 5. Calculate scores
+  const startTime = Date.now();
+  let networkId = null;
+  let containerGroup = null;
 
-  // For now, return a mock result
-  const result = {
-    submissionId,
-    problemId: problem.problemId,
-    status: "completed",
-    evaluatedAt: new Date().toISOString(),
-    executionStatus: "success",
-    timedOut: false,
-    totalScore: 0,
-    maxScore: 100,
-    percentage: 0,
-    rubricScores: [],
-    logs: "Evaluation completed",
-    metadata: {
-      executionTime: 0,
-      memoryUsed: 0,
-    },
-  };
+  try {
+    // Create network if specified
+    if (problem.config.network) {
+      const networkName = problem.config.network.name.replace(
+        "{{submission_id}}",
+        submissionId
+      );
+      const internetAccess = problem.config.network.internet_access !== false;
 
-  // Calculate scores from rubrics
-  if (problem.config.rubrics) {
-    result.maxScore = problem.config.rubrics.reduce(
-      (sum, r) => sum + (r.max_score || 0),
-      0
-    );
+      logger.info(
+        `Creating network ${networkName} for submission ${submissionId}`
+      );
+      networkId = await createNetwork(networkName, {
+        internal: !internetAccess,
+        labels: {
+          submission_id: submissionId,
+          problem_id: problem.problemId,
+        },
+      });
+    }
 
-    // Mock rubric scores
-    result.rubricScores = problem.config.rubrics.map((rubric) => ({
-      rubric_id: rubric.rubric_id,
-      rubric_name: rubric.rubric_name,
-      rubric_type: rubric.rubric_type,
-      score: 0,
-      max_score: rubric.max_score,
+    // Prepare container configurations
+    const containers = problem.config.containers.map((containerConfig) => {
+      const imageName =
+        containerConfig.image_name ||
+        problem.imageNames[containerConfig.container_id];
+
+      return {
+        containerId: containerConfig.container_id,
+        imageName: imageName,
+        stages: containerConfig.stages || [],
+        acceptsSubmission: containerConfig.accepts_submission || false,
+        submissionPackageId: containerConfig.submission_package_id,
+      };
+    });
+
+    // Create container group
+    logger.info(`Creating container group for submission ${submissionId}`);
+    containerGroup = await createContainerGroup({
+      submissionId,
+      problemId: problem.problemId,
+      problemPath: problem.packagePath,
+      submissionPath: submissionDir,
+      resultsPath: resultsDir,
+      containers,
+      networkId,
+      timeout: problem.config.timeout || 1800,
+    });
+
+    // Execute all stages
+    logger.info(`Executing evaluation stages for submission ${submissionId}`);
+    await containerGroup.executeAll();
+
+    // Collect rubric results
+    const rubricScores = [];
+    let totalScore = 0;
+    let maxScore = 0;
+
+    if (problem.config.rubrics) {
+      maxScore = problem.config.rubrics.reduce(
+        (sum, r) => sum + (r.max_score || 0),
+        0
+      );
+
+      for (const rubric of problem.config.rubrics) {
+        const rubricFile = path.join(
+          resultsDir,
+          `rubric_${rubric.rubric_id}.json`
+        );
+
+        try {
+          const rubricData = JSON.parse(await fs.readFile(rubricFile, "utf8"));
+
+          rubricScores.push({
+            rubric_id: rubric.rubric_id,
+            rubric_name: rubric.name,
+            rubric_type: rubric.type,
+            score: rubricData.score || 0,
+            max_score: rubric.max_score,
+            percentage: ((rubricData.score || 0) / rubric.max_score) * 100,
+            status: rubricData.status || "DONE",
+            message: rubricData.message || "",
+            details: rubricData.details || {},
+          });
+
+          totalScore += rubricData.score || 0;
+        } catch (error) {
+          logger.warn(
+            `Failed to read rubric ${rubric.rubric_id}: ${error.message}`
+          );
+          rubricScores.push({
+            rubric_id: rubric.rubric_id,
+            rubric_name: rubric.name,
+            rubric_type: rubric.type,
+            score: 0,
+            max_score: rubric.max_score,
+            percentage: 0,
+            status: "ERROR",
+            message: `Failed to read rubric file: ${error.message}`,
+          });
+        }
+      }
+    }
+
+    const executionTime = Date.now() - startTime;
+
+    const result = {
+      submissionId,
+      problemId: problem.problemId,
+      status: "completed",
+      evaluatedAt: new Date().toISOString(),
+      executionStatus: "success",
+      timedOut: false,
+      totalScore,
+      maxScore,
+      percentage: maxScore > 0 ? (totalScore / maxScore) * 100 : 0,
+      rubricScores,
+      logs: await collectLogs(resultsDir),
+      metadata: {
+        executionTime,
+        memoryUsed: 0, // TODO: collect from container stats
+      },
+    };
+
+    return result;
+  } catch (error) {
+    logger.error(`Evaluation failed for ${submissionId}: ${error.message}`);
+
+    const executionTime = Date.now() - startTime;
+
+    return {
+      submissionId,
+      problemId: problem.problemId,
+      status: "failed",
+      evaluatedAt: new Date().toISOString(),
+      executionStatus: "error",
+      timedOut: false,
+      totalScore: 0,
+      maxScore: problem.config.rubrics
+        ? problem.config.rubrics.reduce((sum, r) => sum + (r.max_score || 0), 0)
+        : 100,
       percentage: 0,
-      status: "SKIPPED",
-      message: "Evaluation not yet implemented",
-    }));
-  }
+      rubricScores: [],
+      logs: `Evaluation error: ${error.message}\n${error.stack}`,
+      metadata: {
+        executionTime,
+        error: error.message,
+      },
+    };
+  } finally {
+    // Cleanup
+    if (containerGroup) {
+      try {
+        await containerGroup.cleanup();
+      } catch (error) {
+        logger.warn(`Cleanup failed: ${error.message}`);
+      }
+    }
 
-  return result;
+    if (networkId) {
+      try {
+        const docker = require("./docker/client");
+        const network = docker.getNetwork(networkId);
+        await network.remove();
+        logger.info(`Network ${networkId} removed`);
+      } catch (error) {
+        logger.warn(`Failed to remove network ${networkId}: ${error.message}`);
+      }
+    }
+  }
+}
+
+/**
+ * Collect logs from results directory
+ */
+async function collectLogs(resultsDir) {
+  try {
+    const logsDir = path.join(resultsDir, "logs");
+    const logFiles = await fs.readdir(logsDir);
+
+    let allLogs = "";
+    for (const logFile of logFiles) {
+      const logPath = path.join(logsDir, logFile);
+      const stats = await fs.stat(logPath);
+
+      if (stats.isFile()) {
+        const content = await fs.readFile(logPath, "utf8");
+        allLogs += `\n=== ${logFile} ===\n${content}\n`;
+      }
+    }
+
+    return allLogs || "No logs available";
+  } catch (error) {
+    return `Failed to collect logs: ${error.message}`;
+  }
 }
 
 /**
@@ -550,12 +720,21 @@ function getEvaluationStatus(jobId) {
 }
 
 /**
+ * Get all active evaluations
+ * @returns {Map} Map of all active evaluations
+ */
+function getActiveEvaluations() {
+  return activeEvaluations;
+}
+
+/**
  * Get processor instance
  * @returns {Object} Processor interface
  */
 function getProcessor() {
   return {
     getEvaluationStatus,
+    getActiveEvaluations,
   };
 }
 
@@ -589,4 +768,5 @@ module.exports = {
   deleteProblem,
   getProcessor,
   processSubmission,
+  getActiveEvaluations,
 };

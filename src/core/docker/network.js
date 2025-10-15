@@ -3,11 +3,14 @@ const docker = require("./client");
 
 /**
  * Create an isolated Docker network for a submission.
- * @param {string} submissionId
+ * @param {string} networkName - Network name
+ * @param {Object} options - Network options
+ * @param {boolean} options.internal - Whether to isolate from external networks
+ * @param {Object} options.labels - Labels to attach to the network
  * @returns {Promise<string>} network id
  */
-async function createNetwork(submissionId) {
-  const networkName = `judgehost-eval-${submissionId}`;
+async function createNetwork(networkName, options = {}) {
+  const { internal = true, labels = {} } = options;
 
   try {
     logger.info(`Creating network ${networkName}`);
@@ -15,15 +18,17 @@ async function createNetwork(submissionId) {
     const network = await docker.createNetwork({
       Name: networkName,
       Driver: "bridge",
-      Internal: true,
+      Internal: internal,
       Attachable: false,
       Labels: {
-        "judgehost.submission_id": submissionId,
         "judgehost.created_at": new Date().toISOString(),
+        ...labels,
       },
       Options: {
         "com.docker.network.bridge.enable_icc": "true",
-        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": internal
+          ? "false"
+          : "true",
       },
     });
 
