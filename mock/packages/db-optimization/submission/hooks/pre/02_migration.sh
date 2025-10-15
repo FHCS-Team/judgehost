@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "[STAGE 2] Applying student migration to database"
+echo "[STAGE 2] Applying submission migration to database"
 
 # Wait for database to be ready
 for i in {1..30}; do
@@ -45,13 +45,14 @@ echo "[STAGE 2] Additional storage: $EXTRA_SIZE bytes"
 
 # Save metrics for evaluation
 mkdir -p /shared
+EXTRA_PCT=$(awk "BEGIN {printf \"%.2f\", $EXTRA_SIZE * 100 / $INITIAL_SIZE}")
 cat > /shared/migration_metrics.json <<EOF
 {
   "migration_time_seconds": $MIGRATION_TIME,
   "initial_size_bytes": $INITIAL_SIZE,
   "final_size_bytes": $FINAL_SIZE,
   "extra_storage_bytes": $EXTRA_SIZE,
-  "extra_storage_percentage": $(echo "scale=2; $EXTRA_SIZE * 100 / $INITIAL_SIZE" | bc)
+  "extra_storage_percentage": $EXTRA_PCT
 }
 EOF
 

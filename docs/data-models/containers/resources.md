@@ -324,11 +324,11 @@ API Tester Container (accepts_submission: false):
   "rubrics": [
     {
       "rubric_id": "api_correctness",
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "security",
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }

@@ -1,17 +1,5 @@
 FROM postgres:14-alpine
 
-# Install required tools
-RUN apk add --no-cache \
-    bash \
-    python3 \
-    py3-pip \
-    curl \
-    jq \
-    bc
-
-# Install Python dependencies
-RUN pip3 install --no-cache-dir psycopg2-binary
-
 # Set timezone
 ENV TZ=UTC
 
@@ -22,7 +10,8 @@ ENV POSTGRES_PASSWORD=judgepass
 ENV PGDATA=/var/lib/postgresql/data/pgdata
 
 # Create workspace
-RUN mkdir -p /workspace /submission
+RUN mkdir -p /workspace /submission \
+	&& chown -R postgres:postgres /workspace /submission
 
 WORKDIR /workspace
 

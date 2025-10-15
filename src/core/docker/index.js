@@ -8,7 +8,7 @@ const containers = require("./containers");
 const network = require("./network");
 const dependency = require("./dependency");
 const group = require("./group");
-const configStage = require("./configStage");
+const stage = require("./configStage");
 
 module.exports = {
   // raw client access
@@ -30,7 +30,7 @@ module.exports = {
   ...group,
 
   // stage config loader
-  ...configStage,
+  ...stage,
 
   // convenience alias
   getDockerContainer: (id) => client.getContainer(id),

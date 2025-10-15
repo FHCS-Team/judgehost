@@ -122,7 +122,7 @@ Get detailed information about a specific problem.
         "rubric_type": "api_endpoints",
         "max_score": 40,
         "weight": 1.0,
-        "evaluated_by_container": "api_tester"
+        "container": "api_tester"
       },
       {
         "rubric_id": "security",
@@ -130,7 +130,7 @@ Get detailed information about a specific problem.
         "rubric_type": "security_scan",
         "max_score": 20,
         "weight": 1.0,
-        "evaluated_by_container": "submission"
+        "container": "submission"
       },
       {
         "rubric_id": "code_quality",
@@ -138,7 +138,7 @@ Get detailed information about a specific problem.
         "rubric_type": "code_quality",
         "max_score": 20,
         "weight": 0.5,
-        "evaluated_by_container": "submission"
+        "container": "submission"
       }
     ],
     "hooks_config": {
@@ -173,6 +173,6 @@ Get detailed information about a specific problem.
 
 ## Notes
 
-1. **Container-Specific Rubrics**: The `evaluated_by_container` field indicates which container is responsible for evaluating each rubric. See [`../data-models/rubrics/mapping.md`](../data-models/rubrics/mapping.md) for more details.
+1. **Container-Specific Rubrics**: The `container` field indicates which container is responsible for evaluating each rubric. See [`../data-models/rubrics/mapping.md`](../data-models/rubrics/mapping.md) for more details.
 2. **Resource Limits**: Total resource limits are the sum of all container limits
 3. **Image Names**: Follow the pattern `problem-{problem_id}:latest`

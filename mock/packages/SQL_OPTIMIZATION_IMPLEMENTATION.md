@@ -27,7 +27,7 @@ db-optimization/
     ├── Dockerfile              # PostgreSQL client tools
     ├── hooks/
     │   ├── pre_01_setup.sh           # Validate submission files
-    │   ├── pre_02_migration.sh       # Apply student migration
+    │   ├── pre_02_migration.sh       # Apply submission migration
     │   ├── post_01_test_queries.sh   # Test correctness & latency
     │   ├── post_02_test_concurrency.sh # Concurrent load test
     │   └── post_03_evaluate_storage.sh # Storage efficiency
@@ -90,7 +90,7 @@ db-optimization/
    - Validate submission files (migration.sql, Q1.sql, Q2.sql, Q3.sql)
    - Prepare query runner utilities
 2. **stage2_run** (600s, network enabled)
-   - Apply student's migration.sql
+   - Apply submission's migration.sql
    - Execute and benchmark all queries
    - Run concurrency tests
    - Evaluate storage efficiency
@@ -181,7 +181,7 @@ CREATE TABLE devices (
 
 ## Submission Format
 
-Students must submit a ZIP containing:
+submissions must submit a ZIP containing:
 
 - `migration.sql` - Schema changes (indexes, partitions, materialized views)
 - `Q1.sql` - Optimized query 1
@@ -262,8 +262,8 @@ GET /api/submissions/{submission_id}
 1. Monitor sample submission execution
 2. Verify rubric generation
 3. Test with different optimization strategies
-4. Document best practices for students
-5. Create problem statement and student documentation
+4. Document best practices for submissions
+5. Create problem statement and submission documentation
 
 ## Files Created
 

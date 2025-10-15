@@ -42,20 +42,20 @@ for i in {1..10}; do
 done
 
 # Calculate throughput (queries per second)
-throughput=$(echo "scale=2; $total_queries / 30" | bc)
+throughput=$(awk "BEGIN {printf \"%.2f\", $total_queries / 30}")
 
 echo "[TEST] Total queries: $total_queries"
 echo "[TEST] Throughput: $throughput queries/second"
 
 # Score: target = 10 qps
 target_throughput=10
-concurrency_score=$(echo "scale=4; if ($throughput > 0) $throughput / $target_throughput else 0" | bc)
-
-if (( $(echo "$concurrency_score > 1" | bc -l) )); then
-    concurrency_score=1
+if [ "$total_queries" -gt 0 ]; then
+    concurrency_score=$(awk "BEGIN {score = $throughput / $target_throughput; if (score > 1) score = 1; printf \"%.4f\", score}")
+else
+    concurrency_score=0
 fi
 
-final_score=$(echo "scale=2; $concurrency_score * 10" | bc)
+final_score=$(awk "BEGIN {printf \"%.2f\", $concurrency_score * 10}")
 
 cat > /out/rubric_concurrency.json <<EOF
 {

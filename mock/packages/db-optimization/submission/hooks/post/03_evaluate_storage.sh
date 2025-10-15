@@ -17,19 +17,12 @@ echo "[TEST] Additional storage: $EXTRA_SIZE bytes"
 
 # Calculate storage efficiency score
 # score_s = clamp(1 - (extra_storage / (0.3 * base_data_size)), 0, 1)
-target_extra=$(echo "scale=0; $INITIAL_SIZE * 0.3 / 1" | bc)
-storage_ratio=$(echo "scale=4; $EXTRA_SIZE / $target_extra" | bc)
-storage_score=$(echo "scale=4; 1 - $storage_ratio" | bc)
+target_extra=$(awk "BEGIN {printf \"%.0f\", $INITIAL_SIZE * 0.3}")
+storage_ratio=$(awk "BEGIN {printf \"%.4f\", $EXTRA_SIZE / $target_extra}")
+storage_score=$(awk "BEGIN {score = 1 - $storage_ratio; if (score < 0) score = 0; if (score > 1) score = 1; printf \"%.4f\", score}")
 
-# Clamp between 0 and 1
-if (( $(echo "$storage_score < 0" | bc -l) )); then
-    storage_score=0
-elif (( $(echo "$storage_score > 1" | bc -l) )); then
-    storage_score=1
-fi
-
-final_score=$(echo "scale=2; $storage_score * 10" | bc)
-extra_percentage=$(echo "scale=2; $EXTRA_SIZE * 100 / $INITIAL_SIZE" | bc)
+final_score=$(awk "BEGIN {printf \"%.2f\", $storage_score * 10}")
+extra_percentage=$(awk "BEGIN {printf \"%.2f\", $EXTRA_SIZE * 100 / $INITIAL_SIZE}")
 
 cat > /out/rubric_resource_efficiency.json <<EOF
 {

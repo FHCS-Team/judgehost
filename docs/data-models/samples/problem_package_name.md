@@ -162,19 +162,19 @@ The global `config.json` at the root defines the container setup:
   "rubrics": [
     {
       "rubric_id": "api_correctness",
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "performance",
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "security",
-      "evaluated_by_container": "submission"
+      "container": "submission"
     },
     {
       "rubric_id": "code_quality",
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }

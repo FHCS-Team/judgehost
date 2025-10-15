@@ -97,25 +97,25 @@ Project types define the category of problem and determine which rubrics are com
       "rubric_id": "api_correctness",
       "rubric_type": "api_endpoints",
       "max_score": 40,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "authentication",
       "rubric_type": "security_scan",
       "max_score": 20,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "database_design",
       "rubric_type": "custom",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     },
     {
       "rubric_id": "code_quality",
       "rubric_type": "code_quality",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }
@@ -201,19 +201,19 @@ Project types define the category of problem and determine which rubrics are com
       "rubric_id": "ui_functionality",
       "rubric_type": "ui_test",
       "max_score": 40,
-      "evaluated_by_container": "ui-tester"
+      "container": "ui-tester"
     },
     {
       "rubric_id": "responsive_design",
       "rubric_type": "ui_test",
       "max_score": 20,
-      "evaluated_by_container": "ui-tester"
+      "container": "ui-tester"
     },
     {
       "rubric_id": "code_quality",
       "rubric_type": "code_quality",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }
@@ -253,31 +253,31 @@ Project types define the category of problem and determine which rubrics are com
       "rubric_id": "frontend_functionality",
       "rubric_type": "ui_test",
       "max_score": 20,
-      "evaluated_by_container": "ui-tester"
+      "container": "ui-tester"
     },
     {
       "rubric_id": "backend_functionality",
       "rubric_type": "api_endpoints",
       "max_score": 20,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "integration",
       "rubric_type": "integration_test",
       "max_score": 30,
-      "evaluated_by_container": "e2e-tester"
+      "container": "e2e-tester"
     },
     {
       "rubric_id": "authentication",
       "rubric_type": "security_scan",
       "max_score": 15,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "code_quality",
       "rubric_type": "code_quality",
       "max_score": 15,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }

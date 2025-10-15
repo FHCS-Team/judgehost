@@ -69,7 +69,7 @@ Returns comprehensive evaluation results including:
         "max_score": 40.0,
         "percentage": 95.0,
         "status": "DONE",
-        "evaluated_by_container": "api_tester",
+        "container": "api_tester",
         "details": {
           "total": 25,
           "passed": 23,
@@ -103,7 +103,7 @@ Returns comprehensive evaluation results including:
         "max_score": 20.0,
         "percentage": 90.0,
         "status": "DONE",
-        "evaluated_by_container": "submission",
+        "container": "submission",
         "details": {
           "total": 4,
           "passed": 3,
@@ -129,7 +129,7 @@ Returns comprehensive evaluation results including:
         "max_score": 20.0,
         "percentage": 82.5,
         "status": "DONE",
-        "evaluated_by_container": "api_tester",
+        "container": "api_tester",
         "details": {
           "total": 5,
           "passed": 4,
@@ -168,7 +168,7 @@ Returns comprehensive evaluation results including:
         "max_score": 20.0,
         "percentage": 75.0,
         "status": "DONE",
-        "evaluated_by_container": "submission",
+        "container": "submission",
         "custom_type_name": "resource_monitoring",
         "details": {
           "total": 3,
@@ -304,7 +304,7 @@ Returns comprehensive evaluation results including:
 
 ## Rubric-to-Container Mapping
 
-The `evaluated_by_container` field in each rubric score indicates which container was responsible for evaluating that rubric:
+The `container` field in each rubric score indicates which container was responsible for evaluating that rubric:
 
 - **Submission container**: Typically evaluates rubrics related to the submission's own code (security scans, code quality, resource usage)
 - **Tester/Sidecar containers**: Evaluate external behavior rubrics (API correctness, UI tests, integration tests)

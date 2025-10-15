@@ -94,7 +94,7 @@ The root `config.json` defines the overall problem structure and orchestration.
       "name": "string",
       "type": "string",
       "max_score": number,
-      "evaluated_by_container": "string"
+      "container": "string"
     }
   ]
 }
@@ -806,14 +806,14 @@ two-sum/
       "name": "Test Cases",
       "type": "test_cases",
       "max_score": 80,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     },
     {
       "rubric_id": "code_quality",
       "name": "Code Quality",
       "type": "code_quality",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }
@@ -932,21 +932,21 @@ rest-api-users/
       "name": "API Endpoints",
       "type": "api_endpoints",
       "max_score": 60,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "code_quality",
       "name": "Code Quality",
       "type": "code_quality",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     },
     {
       "rubric_id": "security",
       "name": "Security",
       "type": "security_scan",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }

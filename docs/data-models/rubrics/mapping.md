@@ -31,7 +31,7 @@ This separation allows for:
 
 ### Specifying Container Mapping
 
-In the global `config.json`, use the `evaluated_by_container` field to specify which container evaluates each rubric:
+In the global `config.json`, use the `container` field to specify which container evaluates each rubric:
 
 ```json
 {
@@ -54,21 +54,21 @@ In the global `config.json`, use the `evaluated_by_container` field to specify w
       "rubric_name": "API Correctness",
       "rubric_type": "api_endpoints",
       "max_score": 40,
-      "evaluated_by_container": "api-tester"
+      "container": "api-tester"
     },
     {
       "rubric_id": "security",
       "rubric_name": "Security",
       "rubric_type": "security_scan",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     },
     {
       "rubric_id": "code_quality",
       "rubric_name": "Code Quality",
       "rubric_type": "code_quality",
       "max_score": 20,
-      "evaluated_by_container": "submission"
+      "container": "submission"
     }
   ]
 }
@@ -76,7 +76,7 @@ In the global `config.json`, use the `evaluated_by_container` field to specify w
 
 ### Default Behavior
 
-If `evaluated_by_container` is not specified:
+If `container` is not specified:
 
 - Rubrics default to the **first container with `accepts_submission: true`**
 - This is typically the submission container
@@ -185,7 +185,7 @@ If `evaluated_by_container` is not specified:
 
 ### Where Hooks Run
 
-Hooks are executed in the container specified by `evaluated_by_container`:
+Hooks are executed in the container specified by `container`:
 
 ```
 Container: submission
@@ -379,7 +379,7 @@ See [`../outputs/logs.md`](../outputs/logs.md) for log format details.
       "rubric_type": "api_endpoints",
       "max_score": 40,
       "weight": 1.0,
-      "evaluated_by_container": "api-tester",
+      "container": "api-tester",
       "description": "Tests all API endpoints for correct behavior"
     },
     {
@@ -388,7 +388,7 @@ See [`../outputs/logs.md`](../outputs/logs.md) for log format details.
       "rubric_type": "performance_benchmark",
       "max_score": 20,
       "weight": 0.8,
-      "evaluated_by_container": "api_tester",
+      "container": "api_tester",
       "description": "Measures API response times and throughput"
     },
     {
@@ -397,7 +397,7 @@ See [`../outputs/logs.md`](../outputs/logs.md) for log format details.
       "rubric_type": "security_scan",
       "max_score": 20,
       "weight": 1.0,
-      "evaluated_by_container": "submission",
+      "container": "submission",
       "description": "Scans for security vulnerabilities"
     },
     {
@@ -406,7 +406,7 @@ See [`../outputs/logs.md`](../outputs/logs.md) for log format details.
       "rubric_type": "code_quality",
       "max_score": 20,
       "weight": 0.5,
-      "evaluated_by_container": "submission",
+      "container": "submission",
       "description": "Analyzes code style and complexity"
     }
   ]

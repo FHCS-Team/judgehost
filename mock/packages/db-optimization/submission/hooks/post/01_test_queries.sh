@@ -69,7 +69,7 @@ while IFS='|' read -r query_name time_ms success; do
     fi
 done < /tmp/query_results.txt
 
-correctness_score=$(echo "scale=2; ($passed_queries * 100 / $total_queries) * 0.5" | bc)
+correctness_score=$(awk "BEGIN {printf \"%.2f\", ($passed_queries * 100 / $total_queries) * 0.5}")
 
 # Generate correctness rubric
 cat > /out/rubric_correctness.json <<EOF
@@ -96,22 +96,22 @@ while IFS='|' read -r query_name time_ms success; do
     if [ "$success" = "true" ]; then
         query_count=$((query_count + 1))
         # score_q = clamp((2000 / median_time_ms), 0, 1)
-        query_score=$(echo "scale=4; if ($time_ms > 0) 2000 / $time_ms else 0" | bc)
-        if (( $(echo "$query_score > 1" | bc -l) )); then
-            query_score=1
+        if [ "$time_ms" -gt 0 ]; then
+            # Calculate score using awk for floating point
+            query_score=$(awk "BEGIN {score = 2000 / $time_ms; if (score > 1) score = 1; printf \"%.4f\", score}")
+            latency_score=$(awk "BEGIN {printf \"%.4f\", $latency_score + $query_score}")
         fi
-        latency_score=$(echo "$latency_score + $query_score" | bc)
     fi
 done < /tmp/query_results.txt
 
 if [ $query_count -gt 0 ]; then
-    avg_latency_score=$(echo "scale=4; $latency_score / $query_count" | bc)
-    final_latency_score=$(echo "scale=2; $avg_latency_score * 30" | bc)
+    avg_latency_score=$(awk "BEGIN {printf \"%.4f\", $latency_score / $query_count}")
+    final_latency_score=$(awk "BEGIN {printf \"%.2f\", $avg_latency_score * 30}")
 else
     final_latency_score=0
 fi
 
-cat > /out/rubric_query_latency.json <<EOF
+cat > /out/rubric_latency.json <<EOF
 {
   "rubric_id": "query_latency",
   "rubric_type": "performance_benchmark",

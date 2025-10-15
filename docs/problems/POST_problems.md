@@ -148,7 +148,7 @@ Problems define evaluation logic through hooks in three categories:
       "description": "string (optional)",
       "max_score": "number (required)",
       "weight": "number (default: 1.0)",
-      "evaluated_by_container": "string (optional) - container_id that evaluates this rubric"
+      "container": "string (optional) - container_id that evaluates this rubric"
     }
   ],
 
@@ -163,7 +163,7 @@ Problems define evaluation logic through hooks in three categories:
 
 - ✅ `containers` array is **required** - must have at least one container
 - ✅ `submission_packages` array defines how submissions are distributed to containers
-- ✅ `evaluated_by_container` in rubrics specifies which container reports each rubric (see [`../data-models/rubrics/mapping.md`](../data-models/rubrics/mapping.md))
+- ✅ `container` in rubrics specifies which container reports each rubric (see [`../data-models/rubrics/mapping.md`](../data-models/rubrics/mapping.md))
 - ⚠️ Legacy fields removed: `container_type`, `dockerfile`, `evaluation_mode`
 - **Note**: All rubrics must be automated - manual rubrics requiring human review are not supported.
 
