@@ -253,10 +253,15 @@ async function submitWithRetry(client, payload, attempt = 1) {
   const judgeTaskId = payload.judge_task_id || "unknown";
 
   try {
-    const response = await client.post(
-      `/judgehosts/add-judging-run/${hostname}/${payload.submission_id}`,
-      payload
-    );
+    const response = await client({
+      method: "post",
+      url: `/judgehosts/add-judging-run/${hostname}/${payload.submission_id}`,
+      data: payload,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Judgehost-Version": require("../../package.json").version || "1.0.0",
+      },
+    });
     return response;
   } catch (error) {
     // Single-post-only: do not retry at all
