@@ -10,9 +10,6 @@ const { initializeProcessor } = require("../core/processor");
 const { getQueueStatus } = require("../core/queue");
 const { cleanupStaleNetworks } = require("../core/docker/network");
 
-// Initialize processor to start listening for jobs
-initializeProcessor();
-
 // Periodic cleanup of stale networks (every 15 minutes)
 const NETWORK_CLEANUP_INTERVAL = 15 * 60 * 1000; // 15 minutes
 setInterval(async () => {
@@ -136,8 +133,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Initialize processor
-logger.info("Initializing processor...");
 initializeProcessor();
 
 // Start server

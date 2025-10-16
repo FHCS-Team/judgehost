@@ -175,7 +175,7 @@ async function submitResult(result, judgeTaskId = null) {
       payload.metrics = result.metrics;
     }
 
-    logger.info("Submitting result to DOMserver", {
+    logger.info("Submitting result to DOMserver via POST", {
       submission_id,
       problem_id,
       status,
