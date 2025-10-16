@@ -43,6 +43,10 @@ function createDOMServerClient() {
 // Singleton instance
 let clientInstance = null;
 
+// Track submissions already posted to DOMserver in-process to prevent duplicates
+// Key: submission_id, Value: true when a POST has been attempted
+const postedSubmissions = new Set();
+
 /**
  * Get DOMserver client instance
  */
@@ -89,6 +93,17 @@ async function submitResult(result, judgeTaskId = null) {
   if (!config.domserver.submitResults) {
     logger.info("Result submission to DOMserver is disabled");
     return { success: false, reason: "submission_disabled" };
+  }
+
+  // Guard against duplicate posts per process lifecycle if enabled
+  if (result?.submission_id) {
+    if (postedSubmissions.has(result.submission_id)) {
+      logger.warn("Skipping DOMserver submission: already posted once", {
+        submission_id: result.submission_id,
+      });
+      return { success: false, reason: "already_posted" };
+    }
+    postedSubmissions.add(result.submission_id);
   }
 
   try {
@@ -244,11 +259,8 @@ async function submitWithRetry(client, payload, attempt = 1) {
     );
     return response;
   } catch (error) {
-    const isRetryable = isRetryableError(error);
-    const canRetry =
-      config.domserver.retryEnabled &&
-      attempt < config.domserver.retryMaxAttempts &&
-      isRetryable;
+    // Single-post-only: do not retry at all
+    throw error;
 
     if (canRetry) {
       const delayMs = calculateRetryDelay(attempt);

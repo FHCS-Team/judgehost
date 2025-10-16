@@ -79,14 +79,56 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
   echo "  curl $API_BASE_URL/submissions/$SUBMISSION_ID | jq '.'"
   echo ""
   echo "Waiting for evaluation to complete..."
-  sleep 5
-  
-  # Check final status
-  curl -s "$API_BASE_URL/submissions/$SUBMISSION_ID" | jq '.data | {status, evaluation_status: .result.evaluation_status, totalScore: .result.totalScore, maxScore: .result.maxScore}'
-  
-  # Cleanup
+
+  # Poll until the submission is completed or failed (or timeout)
+  POLL_INTERVAL=${POLL_INTERVAL:-2}
+  TIMEOUT_SECONDS=${TIMEOUT_SECONDS:-600} # 10 minutes default
+  ELAPSED=0
+  STATUS="running"
+
+  while [ $ELAPSED -lt $TIMEOUT_SECONDS ]; do
+    RESP=$(curl -s "$API_BASE_URL/submissions/$SUBMISSION_ID")
+    SUCCESS=$(echo "$RESP" | jq -r '.success // false')
+
+    if [ "$SUCCESS" != "true" ]; then
+      echo "Error fetching status:"
+      echo "$RESP" | jq '.' || echo "$RESP"
+      break
+    fi
+
+    STATUS=$(echo "$RESP" | jq -r '.data.status // "unknown"')
+    EVAL_STATE=$(echo "$RESP" | jq -r '.data.evaluation_state // ""')
+
+    echo "Status: $STATUS  Eval: $EVAL_STATE  (t=${ELAPSED}s)"
+
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] || [ "$STATUS" = "cancelled" ]; then
+      echo ""
+      echo "Final result:"
+      echo "$RESP" | jq '.data | {status, evaluation_state, result: .result}'
+
+      if [ "$STATUS" = "completed" ]; then
+        TOTAL=$(echo "$RESP" | jq -r '.data.result.totalScore // .data.result.total_score // ""')
+        MAX=$(echo "$RESP" | jq -r '.data.result.maxScore // .data.result.max_score // ""')
+        echo "\nScore: ${TOTAL}/${MAX}"
+        EXIT_CODE=0
+      else
+        echo "\nSubmission did not complete successfully (status=$STATUS)"
+        EXIT_CODE=1
+      fi
+
+      # Cleanup
+      rm -rf "$TEMP_DIR"
+      exit ${EXIT_CODE}
+    fi
+
+    sleep $POLL_INTERVAL
+    ELAPSED=$((ELAPSED + POLL_INTERVAL))
+  done
+
+  echo "\nTimeout (${TIMEOUT_SECONDS}s) waiting for evaluation to finish."
+  echo "You can keep checking with: curl $API_BASE_URL/submissions/$SUBMISSION_ID | jq '.'"
   rm -rf "$TEMP_DIR"
-  exit 0
+  exit 1
 else
   echo ""
   echo "✗ Submission failed with status $HTTP_CODE"

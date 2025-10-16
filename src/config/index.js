@@ -138,8 +138,8 @@ const config = {
     submitResults: process.env.DOMSERVER_SUBMIT_RESULTS !== "false",
     submitOnComplete: process.env.DOMSERVER_SUBMIT_ON_COMPLETE !== "false",
 
-    // Retry settings
-    retryEnabled: process.env.DOMSERVER_RETRY_ENABLED !== "false",
+    // Retry settings (currently not used; single-post behavior only)
+    retryEnabled: process.env.DOMSERVER_RETRY_ENABLED === "true",
     retryMaxAttempts: parseInt(
       process.env.DOMSERVER_RETRY_MAX_ATTEMPTS || "3",
       10
