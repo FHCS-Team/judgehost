@@ -9,7 +9,7 @@ const logger = require("../utils/logger");
 const config = require("../config");
 const dockerClient = require("./docker/client");
 const { buildImage } = require("./docker/image");
-const { createNetwork, removeNetwork } = require("./docker/network");
+const { createNetwork, removeNetworkByName } = require("./docker/network");
 const {
   generateMounts,
   createEvaluationWorkspace,
@@ -149,7 +149,7 @@ async function runEvaluation(options) {
 
     // Remove network
     try {
-      await removeNetwork(networkName);
+      await removeNetworkByName(networkName);
       logger.info(`Removed network: ${networkName}`);
     } catch (error) {
       logger.warn(`Error removing network ${networkName}:`, error.message);

@@ -8,9 +8,37 @@ const logger = require("../utils/logger");
 const config = require("../config");
 const { initializeProcessor } = require("../core/processor");
 const { getQueueStatus } = require("../core/queue");
+const { cleanupStaleNetworks } = require("../core/docker/network");
 
 // Initialize processor to start listening for jobs
 initializeProcessor();
+
+// Periodic cleanup of stale networks (every 15 minutes)
+const NETWORK_CLEANUP_INTERVAL = 15 * 60 * 1000; // 15 minutes
+setInterval(async () => {
+  try {
+    logger.debug("Running scheduled network cleanup...");
+    const cleaned = await cleanupStaleNetworks(60); // Clean networks older than 60 minutes
+    if (cleaned > 0) {
+      logger.info(`Scheduled cleanup removed ${cleaned} stale networks`);
+    }
+  } catch (error) {
+    logger.error("Error during scheduled network cleanup:", error);
+  }
+}, NETWORK_CLEANUP_INTERVAL);
+
+// Run initial cleanup on startup
+(async () => {
+  try {
+    logger.info("Running initial network cleanup on startup...");
+    const cleaned = await cleanupStaleNetworks(30); // Clean networks older than 30 minutes
+    if (cleaned > 0) {
+      logger.info(`Startup cleanup removed ${cleaned} stale networks`);
+    }
+  } catch (error) {
+    logger.error("Error during startup network cleanup:", error);
+  }
+})();
 
 // Create express app
 const app = express();

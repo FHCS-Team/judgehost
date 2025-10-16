@@ -3,7 +3,7 @@
  * Handles communication with the DOMserver API for submitting evaluation results
  */
 
-const axios = require("axios");
+const { createClient, defaultInstance } = require("./axios");
 const logger = require("./logger");
 const config = require("../config");
 
@@ -21,57 +21,21 @@ function createDOMServerClient() {
     return null;
   }
 
-  // Create Basic Auth credentials
   const auth = {
     username: config.domserver.username,
     password: config.domserver.password,
   };
 
-  const client = axios.create({
+  // Use axios util to create a client with consistent interceptors and logging
+  const client = createClient({
     baseURL: `${config.domserver.url}/api/${config.domserver.apiVersion}`,
     timeout: config.domserver.timeoutMs,
-    auth: auth,
+    auth,
     headers: {
       "Content-Type": "application/json",
       "X-Judgehost-Version": require("../../package.json").version || "1.0.0",
     },
   });
-
-  // Add request logging
-  client.interceptors.request.use(
-    (requestConfig) => {
-      logger.debug("DOMserver request", {
-        method: requestConfig.method?.toUpperCase(),
-        url: requestConfig.url,
-        hostname: config.domserver.hostname,
-      });
-      return requestConfig;
-    },
-    (error) => {
-      logger.error("DOMserver request error", error);
-      return Promise.reject(error);
-    }
-  );
-
-  // Add response logging
-  client.interceptors.response.use(
-    (response) => {
-      logger.debug("DOMserver response", {
-        status: response.status,
-        url: response.config.url,
-      });
-      return response;
-    },
-    (error) => {
-      logger.error("DOMserver response error", {
-        status: error.response?.status,
-        url: error.config?.url,
-        message: error.message,
-        data: error.response?.data,
-      });
-      return Promise.reject(error);
-    }
-  );
 
   return client;
 }
